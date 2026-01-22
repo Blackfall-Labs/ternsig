@@ -1,0 +1,36 @@
+[package]
+name = "ternsig"
+version = "0.1.0"
+edition = "2021"
+description = "TernarySignal foundation - TensorISA, adaptive mastery learning, thermogram integration"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/blackfall-labs/ternsig"
+keywords = ["ternary", "neural", "learning", "cognitive", "cpu"]
+categories = ["science", "simulation"]
+
+[dependencies]
+# Persistence
+thermogram = "0.5"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Hashing for binary format
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# File watching for hot reload
+notify = "6.0"
+
+# Logging
+log = "0.4"
+
+[features]
+default = ["serde"]
+serde = []
+
+[dev-dependencies]
