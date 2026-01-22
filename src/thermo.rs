@@ -4,11 +4,11 @@
 //! Weights are stored with thermal state tracking (hot/warm/cold/frozen) and
 //! survive restarts.
 //!
-//! ## ASTRO Compliance
+//! ## Features
 //!
-//! - ASTRO_010: All cognitive state persists through crashes via Thermogram
-//! - ASTRO_004: Weights stored as TernarySignal (polarity + magnitude)
-//! - ASTRO_005: All Thermograms registered in preflight
+//! - All cognitive state persists through crashes via Thermogram
+//! - Weights stored as TernarySignal (polarity + magnitude)
+//! - Temperature lifecycle: HOT → WARM → COOL → COLD
 
 use crate::tensor_isa::{ColdBuffer, TensorInterpreter};
 use anyhow::{Context, Result};

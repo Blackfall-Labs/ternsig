@@ -29,13 +29,12 @@
 //! Shape Bank (0x30-0x3F): Dimension metadata
 //! ```
 //!
-//! ## ASTRO Compliance
+//! ## Design Principles
 //!
-//! - ASTRO_004: All cold registers store TernarySignal weights
-//! - ASTRO_012: TERNARY_MATMUL uses CPU integer arithmetic only
-//! - ASTRO_005: Programs require Thermogram registration in preflight
-//! - ASTRO_010: Weights persist via Thermogram (hot/cold thermal states)
-//! - ASTRO_013: Program paths validated during Cartridge load
+//! - All cold registers store TernarySignal weights (2 bytes each)
+//! - TERNARY_MATMUL uses CPU integer arithmetic only (no floats, no GPU)
+//! - Weights persist via Thermogram with temperature lifecycle
+//! - Programs are hot-reloadable without Rust recompilation
 //!
 //! ## Example Assembly
 //!

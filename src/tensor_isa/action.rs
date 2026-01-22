@@ -123,7 +123,7 @@ impl TensorAction {
     pub const MAX_REDUCE: Self = Self(0x3010);
 
     // =========================================================================
-    // Ternary Operations (0x40xx) - ASTRO_004 compliant
+    // Ternary Operations (0x40xx) - Integer-only, CPU-only
     // =========================================================================
 
     /// Ternary matrix multiply (integer-only): target = W.ternary @ input

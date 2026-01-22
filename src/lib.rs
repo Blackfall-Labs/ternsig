@@ -58,11 +58,12 @@ pub use tensor_isa::{
     ArchStats, ModEvent, ShapeSpec, WireSpec, WireType,
 };
 
-// Adaptive learning utilities
+// Mastery learning - pure integer adaptive learning
 pub mod learning;
 pub use learning::{
-    PolarityState, SurpriseOptimizer, SurpriseOptimizerConfig,
-    FloatingTernaryLayer, OptimizerStats,
+    MasteryConfig, MasteryState, mastery_update,
+    init_random_structure, init_positive_bias,
+    compute_participation_mask, count_active, sparsity,
 };
 
 // Thermogram integration
