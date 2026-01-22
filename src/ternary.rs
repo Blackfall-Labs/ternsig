@@ -13,15 +13,15 @@
 //!
 //! # Example
 //! ```
-//! use ternsig::TernarySignal;
+//! use ternsig::{TernarySignal, Polarity};
 //!
 //! // Strong positive signal
 //! let excited = TernarySignal::positive(200);
 //! assert!(excited.is_positive());
 //! assert!(excited.magnitude_f32() > 0.7);
 //!
-//! // Weak negative signal
-//! let inhibited = TernarySignal::negative(50);
+//! // Using Polarity enum (type-safe)
+//! let inhibited = TernarySignal::with_polarity(Polarity::Negative, 50);
 //! assert!(inhibited.is_negative());
 //!
 //! // No signal
@@ -31,6 +31,73 @@
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+/// Polarity of a neural signal - strictly {-1, 0, +1}
+///
+/// Using this enum instead of raw i8 prevents invalid states like polarity=2.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[repr(i8)]
+pub enum Polarity {
+    /// Inhibitory signal
+    Negative = -1,
+    /// No signal / silent
+    #[default]
+    Zero = 0,
+    /// Excitatory signal
+    Positive = 1,
+}
+
+impl Polarity {
+    /// Convert to i8
+    #[inline]
+    pub const fn as_i8(self) -> i8 {
+        self as i8
+    }
+
+    /// Try to convert from i8, returns None for invalid values
+    #[inline]
+    pub const fn from_i8(value: i8) -> Option<Self> {
+        match value {
+            -1 => Some(Self::Negative),
+            0 => Some(Self::Zero),
+            1 => Some(Self::Positive),
+            _ => None,
+        }
+    }
+
+    /// Convert from i8, clamping invalid values to the nearest valid polarity
+    #[inline]
+    pub const fn from_i8_clamped(value: i8) -> Self {
+        if value > 0 {
+            Self::Positive
+        } else if value < 0 {
+            Self::Negative
+        } else {
+            Self::Zero
+        }
+    }
+
+    /// Is this an active (non-zero) polarity?
+    #[inline]
+    pub const fn is_active(self) -> bool {
+        !matches!(self, Self::Zero)
+    }
+}
+
+impl From<Polarity> for i8 {
+    fn from(p: Polarity) -> i8 {
+        p.as_i8()
+    }
+}
+
+impl TryFrom<i8> for Polarity {
+    type Error = &'static str;
+
+    fn try_from(value: i8) -> Result<Self, Self::Error> {
+        Polarity::from_i8(value).ok_or("polarity must be -1, 0, or +1")
+    }
+}
 
 /// Ternary signal: polarity + magnitude
 ///
@@ -76,10 +143,31 @@ impl TernarySignal {
         Self { polarity: -1, magnitude }
     }
 
-    /// Create from polarity and magnitude
+    /// Create from polarity enum and magnitude (type-safe)
+    #[inline]
+    pub const fn with_polarity(polarity: Polarity, magnitude: u8) -> Self {
+        Self { polarity: polarity.as_i8(), magnitude }
+    }
+
+    /// Create from raw i8 polarity and magnitude
+    ///
+    /// # Warning
+    /// This does not validate that polarity is in {-1, 0, +1}.
+    /// Prefer `with_polarity()` for type safety, or use `new_checked()`.
     #[inline]
     pub const fn new(polarity: i8, magnitude: u8) -> Self {
         Self { polarity, magnitude }
+    }
+
+    /// Create from raw i8 polarity with validation
+    ///
+    /// Returns None if polarity is not in {-1, 0, +1}.
+    #[inline]
+    pub const fn new_checked(polarity: i8, magnitude: u8) -> Option<Self> {
+        match Polarity::from_i8(polarity) {
+            Some(_) => Some(Self { polarity, magnitude }),
+            None => None,
+        }
     }
 
     /// Create from floating point values (compatibility layer)
@@ -138,6 +226,14 @@ impl TernarySignal {
     #[inline]
     pub fn as_signed_i32(&self) -> i32 {
         self.polarity as i32 * self.magnitude as i32
+    }
+
+    /// Get polarity as enum (type-safe)
+    #[inline]
+    pub fn get_polarity(&self) -> Polarity {
+        // Safety: We trust that polarity is always valid.
+        // If not, this returns Zero as fallback.
+        Polarity::from_i8(self.polarity).unwrap_or(Polarity::Zero)
     }
 
     /// Get magnitude as float (0.0 to 1.0)
@@ -273,5 +369,42 @@ mod tests {
     #[test]
     fn test_size() {
         assert_eq!(std::mem::size_of::<TernarySignal>(), 2);
+    }
+
+    #[test]
+    fn test_polarity_enum() {
+        assert_eq!(Polarity::Negative.as_i8(), -1);
+        assert_eq!(Polarity::Zero.as_i8(), 0);
+        assert_eq!(Polarity::Positive.as_i8(), 1);
+
+        assert_eq!(Polarity::from_i8(-1), Some(Polarity::Negative));
+        assert_eq!(Polarity::from_i8(0), Some(Polarity::Zero));
+        assert_eq!(Polarity::from_i8(1), Some(Polarity::Positive));
+        assert_eq!(Polarity::from_i8(2), None);
+        assert_eq!(Polarity::from_i8(-5), None);
+
+        assert_eq!(Polarity::from_i8_clamped(100), Polarity::Positive);
+        assert_eq!(Polarity::from_i8_clamped(-50), Polarity::Negative);
+        assert_eq!(Polarity::from_i8_clamped(0), Polarity::Zero);
+    }
+
+    #[test]
+    fn test_with_polarity() {
+        let pos = TernarySignal::with_polarity(Polarity::Positive, 200);
+        assert_eq!(pos.polarity, 1);
+        assert_eq!(pos.magnitude, 200);
+
+        let neg = TernarySignal::with_polarity(Polarity::Negative, 100);
+        assert_eq!(neg.polarity, -1);
+        assert_eq!(neg.get_polarity(), Polarity::Negative);
+    }
+
+    #[test]
+    fn test_new_checked() {
+        assert!(TernarySignal::new_checked(1, 100).is_some());
+        assert!(TernarySignal::new_checked(0, 0).is_some());
+        assert!(TernarySignal::new_checked(-1, 50).is_some());
+        assert!(TernarySignal::new_checked(2, 100).is_none());
+        assert!(TernarySignal::new_checked(-5, 100).is_none());
     }
 }

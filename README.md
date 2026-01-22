@@ -75,7 +75,7 @@ for sample in samples {
 ```
 
 Key principles:
-- **Participation threshold**: Only top 25% active neurons update
+- **Peak-relative gating**: Only neurons above `max_activation / 4` participate (not percentile-based)
 - **Sustained pressure**: Changes require accumulated evidence
 - **Weaken before flip**: Magnitude depletes before polarity changes
 

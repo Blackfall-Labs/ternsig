@@ -40,7 +40,7 @@
 
 // TernarySignal - The fundamental unit (owned by ternsig)
 mod ternary;
-pub use ternary::TernarySignal;
+pub use ternary::{TernarySignal, Polarity};
 
 // TensorISA - Hot-reloadable neural network definitions
 pub mod tensor_isa;

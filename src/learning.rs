@@ -6,7 +6,7 @@
 //! # Core Principles
 //!
 //! 1. **Structure before learning** - Initialize with ±1 polarity, magnitude 20-40
-//! 2. **Participation-based updates** - Only top 25% active neurons participate
+//! 2. **Peak-relative gating** - Only neurons above `max / divisor` participate (not percentile)
 //! 3. **Sustained pressure** - Pressure must accumulate past threshold before change
 //! 4. **Weaken before flip** - Deplete magnitude to 0 before polarity changes
 //! 5. **Integer throughout** - No floats in the learning loop
@@ -29,7 +29,7 @@ pub struct MasteryConfig {
     pub magnitude_step: u8,
     /// Pressure threshold to trigger weight change
     pub pressure_threshold: i32,
-    /// Participation divisor (4 = top 25%, 2 = top 50%)
+    /// Participation divisor for peak-relative gating (4 = above max/4, 2 = above max/2)
     pub participation_divisor: i32,
     /// Pressure scale factor (higher = faster accumulation)
     pub pressure_scale: i32,
@@ -244,7 +244,7 @@ pub fn init_positive_bias(n_bias: usize, seed: u64) -> Vec<TernarySignal> {
         .collect()
 }
 
-/// Compute participation mask (which neurons are in top N%)
+/// Compute participation mask using peak-relative gating (above max/divisor)
 pub fn compute_participation_mask(activations: &[i32], divisor: i32) -> Vec<bool> {
     let max = activations.iter().copied().max().unwrap_or(1).max(1);
     let threshold = max / divisor;
@@ -304,9 +304,9 @@ mod tests {
     #[test]
     fn test_participation_mask() {
         let activations = vec![100, 50, 25, 10, 5, 0];
-        let mask = compute_participation_mask(&activations, 4); // Top 25%
+        let mask = compute_participation_mask(&activations, 4); // Peak-relative: above max/4
 
-        // Only 100 should be above threshold (100/4 = 25)
+        // Threshold = 100/4 = 25, so only activations > 25 participate
         assert!(mask[0]); // 100 > 25
         assert!(mask[1]); // 50 > 25
         assert!(!mask[2]); // 25 == 25, not >
