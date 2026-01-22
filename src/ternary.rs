@@ -101,6 +101,7 @@ impl TernarySignal {
 
     /// Create from a single signed float (-1.0 to 1.0)
     /// Sign becomes polarity, absolute value becomes magnitude
+    /// DEPRECATED: Use from_signed_i32 for new code
     #[inline]
     pub fn from_signed(value: f32) -> Self {
         let polarity = if value > 0.01 {
@@ -112,6 +113,31 @@ impl TernarySignal {
         };
         let magnitude = (value.abs().min(1.0) * 255.0) as u8;
         Self { polarity, magnitude }
+    }
+
+    /// Create from a signed i32 value
+    /// Sign becomes polarity, absolute value becomes magnitude (clamped to 0-255)
+    #[inline]
+    pub fn from_signed_i32(value: i32) -> Self {
+        if value == 0 {
+            Self::ZERO
+        } else if value > 0 {
+            Self {
+                polarity: 1,
+                magnitude: (value.min(255)) as u8,
+            }
+        } else {
+            Self {
+                polarity: -1,
+                magnitude: ((-value).min(255)) as u8,
+            }
+        }
+    }
+
+    /// Get as signed i32 (polarity * magnitude)
+    #[inline]
+    pub fn as_signed_i32(&self) -> i32 {
+        self.polarity as i32 * self.magnitude as i32
     }
 
     /// Get magnitude as float (0.0 to 1.0)

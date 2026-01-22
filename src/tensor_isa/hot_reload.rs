@@ -38,6 +38,7 @@
 //! ```
 
 use super::{assemble, AssembledProgram, ColdBuffer, TensorInterpreter};
+use crate::TernarySignal;
 use anyhow::{Context, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -410,8 +411,8 @@ impl ReloadableInterpreter {
         self.reload_history.last()
     }
 
-    /// Forward pass with automatic reload check
-    pub fn forward(&mut self, input: &[f32]) -> Result<Vec<f32>> {
+    /// Forward pass with automatic reload check (TernarySignal API)
+    pub fn forward(&mut self, input: &[TernarySignal]) -> Result<Vec<TernarySignal>> {
         // Check for reload at safe point
         if self.interpreter.is_safe_reload_point() {
             self.check_reload()?;
@@ -419,6 +420,18 @@ impl ReloadableInterpreter {
 
         self.interpreter
             .forward(input)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    /// Forward pass with i32 input/output
+    pub fn forward_i32(&mut self, input: &[i32]) -> Result<Vec<i32>> {
+        // Check for reload at safe point
+        if self.interpreter.is_safe_reload_point() {
+            self.check_reload()?;
+        }
+
+        self.interpreter
+            .forward_i32(input)
             .map_err(|e| anyhow::anyhow!(e))
     }
 }

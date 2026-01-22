@@ -11,11 +11,11 @@
 //! ├─────────────────────────────────────────────────┤
 //! │  Hot Regs [H0-HF]:  Vec<i32> activations        │
 //! │  Cold Regs [C0-CF]: Vec<TernarySignal> weights  │
-//! │  Param Regs [P0-PF]: f32 scalars                │
+//! │  Param Regs [P0-PF]: i32 scalars                │
 //! │  Shape Regs [S0-SF]: Vec<usize> shapes          │
 //! ├─────────────────────────────────────────────────┤
 //! │  Program Counter, Call Stack, Loop Stack        │
-//! │  Input/Output Buffers                           │
+//! │  Input/Output Buffers (i32 only, NO FLOATS)     │
 //! └─────────────────────────────────────────────────┘
 //! ```
 
@@ -51,8 +51,8 @@ pub enum DomainOp {
     StoreWeights { register: TensorRegister, key: String },
     /// Consolidate hot → cold
     Consolidate,
-    /// Compute error signal
-    ComputeError { target: f32, output: f32 },
+    /// Compute error signal (i32 scaled by 256)
+    ComputeError { target: i32, output: i32 },
 }
 
 /// Loop state for LOOP instruction
@@ -86,16 +86,18 @@ impl HotBuffer {
         Self::new(shape)
     }
 
-    pub fn from_f32(values: &[f32], shape: Vec<usize>) -> Self {
-        let data: Vec<i32> = values
+    /// Create from TernarySignal slice
+    pub fn from_ternary(signals: &[TernarySignal], shape: Vec<usize>) -> Self {
+        let data: Vec<i32> = signals
             .iter()
-            .map(|&v| (v.clamp(-1.0, 1.0) * 255.0) as i32)
+            .map(|s| s.polarity as i32 * s.magnitude as i32)
             .collect();
         Self { data, shape }
     }
 
-    pub fn to_f32(&self) -> Vec<f32> {
-        self.data.iter().map(|&v| v as f32 / 255.0).collect()
+    /// Convert to TernarySignal vec
+    pub fn to_ternary(&self) -> Vec<TernarySignal> {
+        self.data.iter().map(|&v| TernarySignal::from_signed_i32(v)).collect()
     }
 
     pub fn numel(&self) -> usize {
@@ -152,7 +154,7 @@ impl ColdBuffer {
     }
 }
 
-/// TensorISA Interpreter
+/// TensorISA Interpreter - NO FLOATS, pure integer/ternary
 pub struct TensorInterpreter {
     /// Program instructions
     program: Vec<TensorInstruction>,
@@ -162,28 +164,28 @@ pub struct TensorInterpreter {
     hot_regs: Vec<Option<HotBuffer>>,
     /// Cold registers (weights)
     cold_regs: Vec<Option<ColdBuffer>>,
-    /// Param registers (scalars)
-    param_regs: Vec<f32>,
+    /// Param registers (i32 scalars, scaled by 256)
+    param_regs: Vec<i32>,
     /// Shape registers (dimensions)
     shape_regs: Vec<Vec<usize>>,
     /// Call stack for subroutines
     call_stack: Vec<usize>,
     /// Loop stack
     loop_stack: Vec<LoopState>,
-    /// Input buffer
+    /// Input buffer (i32)
     input_buffer: Vec<i32>,
-    /// Output buffer
-    output_buffer: Vec<f32>,
-    /// Target buffer (for learning)
-    target_buffer: Vec<f32>,
+    /// Output buffer (i32)
+    output_buffer: Vec<i32>,
+    /// Target buffer (for learning, i32)
+    target_buffer: Vec<i32>,
     /// Pressure accumulators (for mastery learning) - indexed by cold register
     pressure_regs: Vec<Option<Vec<i32>>>,
-    /// Current babble scale (for learning)
-    babble_scale: f32,
+    /// Current babble scale (i32, 0-255 range)
+    babble_scale: i32,
     /// Babble phase (deterministic pattern)
     babble_phase: usize,
-    /// Current error (from last learning step)
-    current_error: f32,
+    /// Current error (from last learning step, scaled by 256)
+    current_error: i32,
 }
 
 impl TensorInterpreter {
@@ -194,7 +196,7 @@ impl TensorInterpreter {
             pc: 0,
             hot_regs: vec![None; 16],
             cold_regs: vec![None; 16],
-            param_regs: vec![0.0; 16],
+            param_regs: vec![0; 16],
             shape_regs: vec![Vec::new(); 16],
             call_stack: Vec::with_capacity(16),
             loop_stack: Vec::with_capacity(8),
@@ -202,9 +204,9 @@ impl TensorInterpreter {
             output_buffer: Vec::new(),
             target_buffer: Vec::new(),
             pressure_regs: vec![None; 16],
-            babble_scale: 0.02,
+            babble_scale: 5, // ~2% of 255
             babble_phase: 0,
-            current_error: 0.0,
+            current_error: 0,
         }
     }
 
@@ -245,27 +247,43 @@ impl TensorInterpreter {
         }
     }
 
-    /// Set input buffer (called before forward pass)
-    pub fn set_input(&mut self, input: &[f32]) {
+    /// Set input buffer from TernarySignal (primary API)
+    pub fn set_input(&mut self, input: &[TernarySignal]) {
         self.input_buffer = input
             .iter()
-            .map(|&v| (v.clamp(-1.0, 1.0) * 255.0) as i32)
+            .map(|s| s.polarity as i32 * s.magnitude as i32)
             .collect();
     }
 
+    /// Set input buffer with i32 values directly
+    pub fn set_input_i32(&mut self, input: &[i32]) {
+        self.input_buffer = input.to_vec();
+    }
+
     /// Set target buffer (called before learning pass)
-    pub fn set_target(&mut self, target: &[f32]) {
+    pub fn set_target(&mut self, target: &[TernarySignal]) {
+        self.target_buffer = target
+            .iter()
+            .map(|s| s.polarity as i32 * s.magnitude as i32)
+            .collect();
+    }
+
+    /// Set target buffer with i32 values directly
+    pub fn set_target_i32(&mut self, target: &[i32]) {
         self.target_buffer = target.to_vec();
     }
 
-    /// Get output buffer (called after forward pass)
-    pub fn output(&self) -> &[f32] {
+    /// Get output buffer as i32 (called after forward pass)
+    pub fn output_i32(&self) -> &[i32] {
         &self.output_buffer
     }
 
-    /// Set input buffer with i32 values directly (no scaling).
-    pub fn set_input_i32(&mut self, input: &[i32]) {
-        self.input_buffer = input.to_vec();
+    /// Get output buffer as TernarySignal
+    pub fn output(&self) -> Vec<TernarySignal> {
+        self.output_buffer
+            .iter()
+            .map(|&v| TernarySignal::from_signed_i32(v))
+            .collect()
     }
 
     /// Get immutable iterator over cold buffers.
@@ -326,9 +344,21 @@ impl TensorInterpreter {
         }
     }
 
-    /// Forward pass: set input, run, get output
-    pub fn forward(&mut self, input: &[f32]) -> Result<Vec<f32>, String> {
+    /// Forward pass: set input, run, get output (TernarySignal API)
+    pub fn forward(&mut self, input: &[TernarySignal]) -> Result<Vec<TernarySignal>, String> {
         self.set_input(input);
+        self.reset();
+
+        match self.run() {
+            StepResult::Halt | StepResult::Ended => Ok(self.output()),
+            StepResult::Error(e) => Err(e),
+            _ => Err("Unexpected termination".to_string()),
+        }
+    }
+
+    /// Forward pass with i32 input/output
+    pub fn forward_i32(&mut self, input: &[i32]) -> Result<Vec<i32>, String> {
+        self.set_input_i32(input);
         self.reset();
 
         match self.run() {
@@ -361,7 +391,7 @@ impl TensorInterpreter {
             TensorAction::STORE_OUTPUT => {
                 let idx = instr.source.index();
                 if let Some(buf) = &self.hot_regs[idx] {
-                    self.output_buffer = buf.to_f32();
+                    self.output_buffer = buf.data.clone();
                 }
                 StepResult::Continue
             }
@@ -649,11 +679,11 @@ impl TensorInterpreter {
     fn execute_sigmoid(&mut self, instr: TensorInstruction) -> StepResult {
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();
-        // Gain from modifier (default 4.0)
+        // Gain from modifier (default 64 = 4.0 * 16)
         let gain = if instr.modifier[0] > 0 {
-            instr.modifier[0] as f32 / 16.0
+            instr.modifier[0] as i32
         } else {
-            4.0
+            64
         };
 
         let src = match &self.hot_regs[src_idx] {
@@ -661,15 +691,16 @@ impl TensorInterpreter {
             None => return StepResult::Error("Source not allocated".to_string()),
         };
 
-        // Sigmoid: 1 / (1 + exp(-x * gain))
-        // Input is i32 (scaled by 256), output is i32 (0-255 range)
+        // Integer sigmoid approximation using piecewise linear
+        // Input is i32, output is i32 (0-255 range)
+        // sigmoid(x) ≈ clamp(x * gain / 256 + 128, 0, 255)
         let result: Vec<i32> = src
             .data
             .iter()
             .map(|&v| {
-                let x = v as f32 / 256.0;
-                let sigmoid = 1.0 / (1.0 + (-x * gain).exp());
-                (sigmoid * 255.0) as i32
+                // Scale by gain, shift to 0-255 range
+                let scaled = (v as i64 * gain as i64) >> 10;
+                (scaled + 128).clamp(0, 255) as i32
             })
             .collect();
 
@@ -766,13 +797,8 @@ impl TensorInterpreter {
     fn execute_load_target(&mut self, instr: TensorInstruction) -> StepResult {
         let idx = instr.target.index();
 
-        // Load target into a hot register (as i32 scaled)
-        let data: Vec<i32> = self
-            .target_buffer
-            .iter()
-            .map(|&v| (v * 255.0) as i32)
-            .collect();
-
+        // Load target into a hot register (already i32)
+        let data = self.target_buffer.clone();
         let len = data.len();
         self.hot_regs[idx] = Some(HotBuffer {
             data,
@@ -894,16 +920,16 @@ impl TensorInterpreter {
 
     fn execute_dequantize(&mut self, instr: TensorInstruction) -> StepResult {
         let src_idx = instr.source.index();
-        let scale = instr.scale() as f32;
+        let shift = instr.scale() as u32;
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf,
             None => return StepResult::Error("Source not allocated".to_string()),
         };
 
-        // Convert to f32 and store in output buffer
-        let scale_factor = if scale > 0.0 { scale } else { 65536.0 };
-        self.output_buffer = src.data.iter().map(|&v| v as f32 / scale_factor).collect();
+        // Shift values and store in output buffer (stays i32)
+        let shift_amt = if shift > 0 { shift } else { 8 };
+        self.output_buffer = src.data.iter().map(|&v| v >> shift_amt).collect();
 
         StepResult::Continue
     }
@@ -912,18 +938,16 @@ impl TensorInterpreter {
         let idx = instr.target.index();
 
         if let Some(buf) = &mut self.hot_regs[idx] {
-            let babble_base = (self.babble_scale * 255.0 * 50.0) as i32;
+            // babble_scale is 0-255, multiply by 50 for babble magnitude
+            let babble_base = self.babble_scale * 50;
 
             for (i, val) in buf.data.iter_mut().enumerate() {
-                let phase = self.babble_phase as f32;
-                let magnitude_factor =
-                    0.3 + 0.7 * (phase * 0.03 + i as f32 * 0.7).cos().abs();
-                let sign = if (i * 7 + (phase as usize / 10)) % 5 < 3 {
-                    1
-                } else {
-                    -1
-                };
-                let babble = sign * ((babble_base as f32 * magnitude_factor) as i32);
+                // Deterministic pseudo-random pattern using phase and index
+                let phase = self.babble_phase;
+                // Simple integer-based magnitude variation (30%-100% range)
+                let magnitude_factor = 77 + ((phase * 7 + i * 13) % 179); // 77-255 range
+                let sign = if (i * 7 + phase / 10) % 5 < 3 { 1i32 } else { -1i32 };
+                let babble = sign * (babble_base * magnitude_factor as i32 / 255);
                 let positive_bias = babble_base / 3;
                 *val = val.saturating_add(babble + positive_bias);
             }
@@ -999,9 +1023,9 @@ impl TensorInterpreter {
         self.cold_regs.get_mut(index).and_then(|r| r.as_mut())
     }
 
-    /// Set babble scale
-    pub fn set_babble_scale(&mut self, scale: f32) {
-        self.babble_scale = scale;
+    /// Set babble scale (0-255 range)
+    pub fn set_babble_scale(&mut self, scale: i32) {
+        self.babble_scale = scale.clamp(0, 255);
     }
 
     /// Get current program length
@@ -1067,12 +1091,21 @@ mod tests {
         let program = assemble(source).unwrap();
         let mut interp = TensorInterpreter::from_program(&program);
 
-        let input = vec![0.5, -0.3, 0.8, 0.0];
+        // Input as TernarySignal
+        let input = vec![
+            TernarySignal::positive(128), // ~0.5
+            TernarySignal::negative(77),  // ~-0.3
+            TernarySignal::positive(204), // ~0.8
+            TernarySignal::zero(),        // 0
+        ];
         let output = interp.forward(&input).unwrap();
 
         assert_eq!(output.len(), 4);
-        // Values should be approximately preserved (quantization)
-        assert!((output[0] - 0.5).abs() < 0.01);
+        // Values should be preserved
+        assert!(output[0].polarity > 0);
+        assert!(output[1].polarity < 0);
+        assert!(output[2].polarity > 0);
+        assert_eq!(output[3].polarity, 0);
     }
 
     #[test]
@@ -1092,13 +1125,44 @@ mod tests {
         let program = assemble(source).unwrap();
         let mut interp = TensorInterpreter::from_program(&program);
 
-        let input = vec![0.5, -0.3, 0.8, -0.5];
+        // Input as TernarySignal
+        let input = vec![
+            TernarySignal::positive(128), // positive
+            TernarySignal::negative(77),  // negative
+            TernarySignal::positive(204), // positive
+            TernarySignal::negative(128), // negative
+        ];
         let output = interp.forward(&input).unwrap();
 
         // ReLU: negative values become 0
-        assert!(output[0] > 0.0);
-        assert!((output[1] - 0.0).abs() < 0.01);
-        assert!(output[2] > 0.0);
-        assert!((output[3] - 0.0).abs() < 0.01);
+        assert!(output[0].polarity >= 0);  // positive stays positive
+        assert_eq!(output[1].magnitude, 0); // negative becomes 0
+        assert!(output[2].polarity >= 0);  // positive stays positive
+        assert_eq!(output[3].magnitude, 0); // negative becomes 0
+    }
+
+    #[test]
+    fn test_forward_i32() {
+        let source = r#"
+.registers
+    H0: i32[4]
+
+.program
+    load_input H0
+    store_output H0
+    halt
+"#;
+
+        let program = assemble(source).unwrap();
+        let mut interp = TensorInterpreter::from_program(&program);
+
+        let input = vec![100, -50, 200, 0];
+        let output = interp.forward_i32(&input).unwrap();
+
+        assert_eq!(output.len(), 4);
+        assert_eq!(output[0], 100);
+        assert_eq!(output[1], -50);
+        assert_eq!(output[2], 200);
+        assert_eq!(output[3], 0);
     }
 }

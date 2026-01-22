@@ -307,7 +307,11 @@ impl fmt::Display for TensorInstruction {
             }
             0x30 | 0x40 => {
                 // Forward/Ternary ops
-                if self.aux != 0 && self.aux != 0xFF {
+                if self.action == TensorAction::TERNARY_MATMUL {
+                    // ternary_matmul always has aux as input register
+                    let aux_reg = TensorRegister(self.aux);
+                    write!(f, "{} {}, {}, {}", self.action, self.target, self.source, aux_reg)
+                } else if self.aux != 0 && self.aux != 0xFF {
                     let aux_reg = TensorRegister(self.aux);
                     write!(f, "{} {}, {}, {}", self.action, self.target, self.source, aux_reg)
                 } else if self.action == TensorAction::SHIFT {

@@ -182,13 +182,17 @@ impl TensorAssembler {
         // Resolve labels
         self.resolve_labels()?;
 
+        // Infer input/output shapes from load_input/store_output instructions
+        let input_shape = self.infer_input_shape();
+        let output_shape = self.infer_output_shape();
+
         Ok(AssembledProgram {
             name: String::new(),
             registers: self.registers.clone(),
             instructions: self.instructions.clone(),
             labels: self.labels.clone(),
-            input_shape: Vec::new(),
-            output_shape: Vec::new(),
+            input_shape,
+            output_shape,
         })
     }
 
@@ -304,6 +308,27 @@ impl TensorAssembler {
             "store_output" => {
                 let source = self.parse_register_operand(ops.get(0))?;
                 Ok(TensorInstruction::store_output(source))
+            }
+            "copy_reg" | "copy" | "mov" => {
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                Ok(TensorInstruction::new(
+                    TensorAction::COPY_REG,
+                    target,
+                    source,
+                    0,
+                    [0, 0, 0],
+                ))
+            }
+            "zero_reg" | "zero" => {
+                let target = self.parse_register_operand(ops.get(0))?;
+                Ok(TensorInstruction::new(
+                    TensorAction::ZERO_REG,
+                    target,
+                    TensorRegister::NULL,
+                    0,
+                    [0, 0, 0],
+                ))
             }
 
             // Forward ops
@@ -573,6 +598,32 @@ impl TensorAssembler {
             }
             None => Ok(default),
         }
+    }
+
+    /// Infer input shape from load_input instruction's target register
+    fn infer_input_shape(&self) -> Vec<usize> {
+        for instr in &self.instructions {
+            if instr.action == TensorAction::LOAD_INPUT {
+                // Find the target register's shape
+                if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.target) {
+                    return reg_meta.shape.clone();
+                }
+            }
+        }
+        vec![1] // Default if no load_input found
+    }
+
+    /// Infer output shape from store_output instruction's source register
+    fn infer_output_shape(&self) -> Vec<usize> {
+        for instr in &self.instructions {
+            if instr.action == TensorAction::STORE_OUTPUT {
+                // Find the source register's shape
+                if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.source) {
+                    return reg_meta.shape.clone();
+                }
+            }
+        }
+        vec![1] // Default if no store_output found
     }
 
     /// Resolve label references
