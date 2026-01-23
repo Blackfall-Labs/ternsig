@@ -386,6 +386,28 @@ impl Assembler {
                     [gain, 0, 0],
                 ))
             }
+            "gelu" => {
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                Ok(Instruction::new(
+                    Action::GELU,
+                    target,
+                    source,
+                    0,
+                    [0, 0, 0],
+                ))
+            }
+            "softmax" => {
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                Ok(Instruction::new(
+                    Action::SOFTMAX,
+                    target,
+                    source,
+                    0,
+                    [0, 0, 0],
+                ))
+            }
             "shift" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
