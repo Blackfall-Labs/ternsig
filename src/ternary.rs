@@ -228,6 +228,64 @@ impl Signal {
         }
     }
 
+    /// Create from spike rate (Hz) - bridges SNN microtime to Signal macrotime
+    ///
+    /// Converts a firing rate into a Signal:
+    /// - rate = 0 Hz → neutral signal
+    /// - rate > 0 → positive signal, magnitude scales with rate
+    /// - max_rate defines what maps to magnitude 255 (typically 100 Hz)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // 50 Hz out of max 100 Hz → positive signal with magnitude ~128
+    /// let signal = Signal::from_spike_rate(50.0, 100.0);
+    /// assert!(signal.is_positive());
+    /// assert!(signal.magnitude > 100 && signal.magnitude < 150);
+    /// ```
+    #[inline]
+    pub fn from_spike_rate(rate_hz: f32, max_rate_hz: f32) -> Self {
+        if rate_hz <= 0.0 || max_rate_hz <= 0.0 {
+            return Self::ZERO;
+        }
+        let normalized = (rate_hz / max_rate_hz).clamp(0.0, 1.0);
+        let magnitude = (normalized * 255.0) as u8;
+        if magnitude == 0 {
+            Self::ZERO
+        } else {
+            Self::positive(magnitude)
+        }
+    }
+
+    /// Create from spike count in a time window - SNN integration helper
+    ///
+    /// Given spike_count spikes in window_ms milliseconds,
+    /// calculates rate and converts to Signal.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // 5 spikes in 50ms window = 100 Hz rate
+    /// let signal = Signal::from_spike_count(5, 50.0, 100.0);
+    /// ```
+    #[inline]
+    pub fn from_spike_count(count: u32, window_ms: f32, max_rate_hz: f32) -> Self {
+        if count == 0 || window_ms <= 0.0 {
+            return Self::ZERO;
+        }
+        // rate = count / (window_ms / 1000) = count * 1000 / window_ms
+        let rate_hz = count as f32 * 1000.0 / window_ms;
+        Self::from_spike_rate(rate_hz, max_rate_hz)
+    }
+
+    /// Convert to spike rate (Hz) - inverse of from_spike_rate
+    #[inline]
+    pub fn to_spike_rate(&self, max_rate_hz: f32) -> f32 {
+        if self.polarity == 0 || self.magnitude == 0 {
+            return 0.0;
+        }
+        let normalized = self.magnitude as f32 / 255.0;
+        normalized * max_rate_hz * self.polarity.signum() as f32
+    }
+
     /// Get as signed i32 (polarity * magnitude)
     #[inline]
     pub fn as_signed_i32(&self) -> i32 {
@@ -580,5 +638,90 @@ mod tests {
         let result = signal.step_toward_ratio(&target, 0.1);
         assert_eq!(result.polarity, 1);
         assert!(result.magnitude >= 10 && result.magnitude <= 11);
+    }
+
+    // =========================================================================
+    // Spike Rate Conversion Tests (SNN-Ternsig Bridge)
+    // =========================================================================
+
+    #[test]
+    fn test_from_spike_rate_basic() {
+        // 50 Hz out of max 100 Hz → ~50% magnitude
+        let signal = Signal::from_spike_rate(50.0, 100.0);
+        assert!(signal.is_positive());
+        assert!(signal.magnitude > 100 && signal.magnitude < 150);
+
+        // 100 Hz out of max 100 Hz → full magnitude
+        let full = Signal::from_spike_rate(100.0, 100.0);
+        assert_eq!(full.magnitude, 255);
+
+        // 0 Hz → zero signal
+        let zero = Signal::from_spike_rate(0.0, 100.0);
+        assert!(!zero.is_active());
+    }
+
+    #[test]
+    fn test_from_spike_rate_edge_cases() {
+        // Negative rate → zero (invalid)
+        let neg = Signal::from_spike_rate(-10.0, 100.0);
+        assert!(!neg.is_active());
+
+        // Zero max rate → zero (avoid division by zero)
+        let zero_max = Signal::from_spike_rate(50.0, 0.0);
+        assert!(!zero_max.is_active());
+
+        // Rate exceeds max → clamped to 255
+        let over = Signal::from_spike_rate(200.0, 100.0);
+        assert_eq!(over.magnitude, 255);
+    }
+
+    #[test]
+    fn test_from_spike_count() {
+        // 10 spikes in 100ms = 100 Hz, max 200 Hz → ~50%
+        let signal = Signal::from_spike_count(10, 100.0, 200.0);
+        assert!(signal.is_positive());
+        assert!(signal.magnitude > 100 && signal.magnitude < 150);
+
+        // 0 spikes → zero
+        let zero = Signal::from_spike_count(0, 100.0, 200.0);
+        assert!(!zero.is_active());
+
+        // 0 window → zero (avoid division by zero)
+        let zero_window = Signal::from_spike_count(10, 0.0, 200.0);
+        assert!(!zero_window.is_active());
+    }
+
+    #[test]
+    fn test_to_spike_rate() {
+        // Full positive → max rate
+        let full = Signal::positive(255);
+        assert!((full.to_spike_rate(100.0) - 100.0).abs() < 0.1);
+
+        // Half magnitude → half rate
+        let half = Signal::positive(128);
+        assert!((half.to_spike_rate(100.0) - 50.2).abs() < 1.0);
+
+        // Zero signal → 0 Hz
+        let zero = Signal::zero();
+        assert_eq!(zero.to_spike_rate(100.0), 0.0);
+
+        // Negative signals give negative rate
+        let neg = Signal::negative(128);
+        let rate = neg.to_spike_rate(100.0);
+        assert!(rate < 0.0);
+        assert!((rate + 50.2).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_spike_rate_roundtrip() {
+        // from_spike_rate → to_spike_rate should round-trip reasonably
+        let original_rate = 75.0;
+        let max_rate = 150.0;
+
+        let signal = Signal::from_spike_rate(original_rate, max_rate);
+        let recovered_rate = signal.to_spike_rate(max_rate);
+
+        // Allow for quantization error (255 levels)
+        assert!((recovered_rate - original_rate).abs() < 1.0);
     }
 }

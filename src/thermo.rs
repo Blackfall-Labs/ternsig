@@ -327,6 +327,7 @@ mod tests {
             shape: vec![3],
             thermogram_key: Some("test.weights".to_string()),
             frozen: false,
+            temperatures: None,
         };
 
         let content = WeightContent::from_cold_buffer("test.weights", &buffer);
