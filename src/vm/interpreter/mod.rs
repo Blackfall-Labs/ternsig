@@ -73,13 +73,53 @@ impl HotBuffer {
     }
 }
 
-/// Cold register (weight buffer)
+/// Temperature levels for signal plasticity
+/// Maps to thermogram 4-layer temperature model
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum SignalTemperature {
+    /// Hot: Working memory, high plasticity (threshold / 2)
+    #[default]
+    Hot = 0,
+    /// Warm: Session learning, normal plasticity (threshold)
+    Warm = 1,
+    /// Cool: Expertise, low plasticity (threshold * 2)
+    Cool = 2,
+    /// Cold: Core identity, frozen (no learning)
+    Cold = 3,
+}
+
+impl SignalTemperature {
+    /// Get threshold multiplier for this temperature
+    pub fn threshold_multiplier(&self) -> i32 {
+        match self {
+            Self::Hot => 1,   // threshold / 2 (easy)
+            Self::Warm => 2,  // threshold (normal)
+            Self::Cool => 4,  // threshold * 2 (hard)
+            Self::Cold => i32::MAX, // impossible
+        }
+    }
+
+    /// Create from u8 value
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Hot,
+            1 => Self::Warm,
+            2 => Self::Cool,
+            _ => Self::Cold,
+        }
+    }
+}
+
+/// Cold register (signal buffer with optional per-signal temperature)
 #[derive(Debug, Clone)]
 pub struct ColdBuffer {
     pub weights: Vec<Signal>,
     pub shape: Vec<usize>,
     pub thermogram_key: Option<String>,
     pub frozen: bool,
+    /// Per-signal temperature (None = all HOT)
+    pub temperatures: Option<Vec<SignalTemperature>>,
 }
 
 impl ColdBuffer {
@@ -90,6 +130,7 @@ impl ColdBuffer {
             shape,
             thermogram_key: None,
             frozen: false,
+            temperatures: None,
         }
     }
 
@@ -112,6 +153,36 @@ impl ColdBuffer {
 
     pub fn numel(&self) -> usize {
         self.weights.len()
+    }
+
+    /// Get temperature for a specific signal index
+    pub fn temperature(&self, idx: usize) -> SignalTemperature {
+        match &self.temperatures {
+            Some(temps) => temps.get(idx).copied().unwrap_or(SignalTemperature::Hot),
+            None => SignalTemperature::Hot,
+        }
+    }
+
+    /// Set temperature for a specific signal
+    pub fn set_temperature(&mut self, idx: usize, temp: SignalTemperature) {
+        let temps = self.temperatures.get_or_insert_with(|| {
+            vec![SignalTemperature::Hot; self.weights.len()]
+        });
+        if idx < temps.len() {
+            temps[idx] = temp;
+        }
+    }
+
+    /// Set all temperatures to a single value
+    pub fn set_all_temperatures(&mut self, temp: SignalTemperature) {
+        self.temperatures = Some(vec![temp; self.weights.len()]);
+    }
+
+    /// Get mutable access to temperatures (creates if None)
+    pub fn temperatures_mut(&mut self) -> &mut Vec<SignalTemperature> {
+        self.temperatures.get_or_insert_with(|| {
+            vec![SignalTemperature::Hot; self.weights.len()]
+        })
     }
 }
 

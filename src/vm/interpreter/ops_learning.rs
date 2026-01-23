@@ -62,7 +62,7 @@ impl Interpreter {
 
     pub(super) fn execute_mastery_commit(&mut self, instr: Instruction) -> StepResult {
         let weights_idx = instr.target.index();
-        let pressure_threshold = if instr.modifier[0] > 0 { instr.modifier[0] as i32 } else { 50 };
+        let base_threshold = if instr.modifier[0] > 0 { instr.modifier[0] as i32 } else { 50 };
         let mag_step = if instr.modifier[1] > 0 { instr.modifier[1] } else { 5 };
 
         let pressure = match &mut self.pressure_regs[weights_idx] {
@@ -70,15 +70,35 @@ impl Interpreter {
             None => return StepResult::Continue,
         };
 
+        // Get temperatures first (before mutable borrow of signals)
+        let temperatures: Vec<i32> = match &self.cold_regs[weights_idx] {
+            Some(buf) => (0..buf.weights.len())
+                .map(|i| buf.temperature(i).threshold_multiplier())
+                .collect(),
+            None => return StepResult::Error("Signal register not allocated".to_string()),
+        };
+
         let signals = match &mut self.cold_regs[weights_idx] {
-            Some(buf) => &mut buf.weights,  // Storage field is weights but semantically these are Signals
+            Some(buf) => &mut buf.weights,
             None => return StepResult::Error("Signal register not allocated".to_string()),
         };
 
         for (i, p) in pressure.iter_mut().enumerate() {
             if i >= signals.len() { break; }
 
-            if p.abs() >= pressure_threshold {
+            // Temperature-aware threshold:
+            // HOT: base_threshold / 2 (multiplier=1, so threshold/2)
+            // WARM: base_threshold (multiplier=2)
+            // COOL: base_threshold * 2 (multiplier=4)
+            // COLD: impossible (multiplier=MAX)
+            let temp_multiplier = temperatures.get(i).copied().unwrap_or(1);
+            let effective_threshold = if temp_multiplier == i32::MAX {
+                i32::MAX // COLD: never update
+            } else {
+                (base_threshold * temp_multiplier) / 2
+            };
+
+            if p.abs() >= effective_threshold {
                 let needed_polarity = if *p > 0 { 1i8 } else { -1i8 };
                 let s = &mut signals[i];
 
