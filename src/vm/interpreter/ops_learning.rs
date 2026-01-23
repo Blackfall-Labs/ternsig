@@ -17,11 +17,25 @@ impl Interpreter {
     }
 
     pub(super) fn execute_mastery_update(&mut self, instr: Instruction) -> StepResult {
+        // =========================================================================
+        // DOPAMINE GATING: No learning without surprise/reward
+        // =========================================================================
+        // Dopamine gates whether learning happens at all.
+        // Below threshold: no pressure accumulation (no learning)
+        // Above threshold: learning rate scales with dopamine level
+        if !self.chemical_state.learning_enabled() {
+            return StepResult::Continue; // No learning without dopamine
+        }
+
         let weights_idx = instr.target.index();
         let activity_idx = instr.source.index();
         let direction_idx = instr.aux as usize & 0x0F;
-        let scale = if instr.modifier[0] > 0 { instr.modifier[0] as i32 } else { 15 };
+        let base_scale = if instr.modifier[0] > 0 { instr.modifier[0] as i32 } else { 15 };
         let threshold_div = if instr.modifier[1] > 0 { instr.modifier[1] as i32 } else { 4 };
+
+        // Scale by dopamine level (1-4x multiplier based on dopamine)
+        let dopamine_scale = self.chemical_state.dopamine_scale();
+        let scale = base_scale * dopamine_scale;
 
         let activity = match &self.hot_regs[activity_idx] {
             Some(buf) => buf.data.clone(),

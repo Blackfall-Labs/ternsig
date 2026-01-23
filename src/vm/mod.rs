@@ -69,7 +69,7 @@ pub use binary::{
     BinaryFlags, Header, HEADER_SIZE,
 };
 pub use instruction::{Instruction, InstructionBuilder};
-pub use interpreter::{ColdBuffer, DomainOp, HotBuffer, StepResult, Interpreter, SignalTemperature};
+pub use interpreter::{ColdBuffer, DomainOp, HotBuffer, StepResult, Interpreter, SignalTemperature, ChemicalState};
 pub use modifier::{ModifierFlags, Modifier};
 pub use register::{RegisterBank, RegisterMeta, Dtype, Register};
 pub use hot_reload::{

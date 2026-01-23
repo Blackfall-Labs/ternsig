@@ -186,6 +186,58 @@ impl ColdBuffer {
     }
 }
 
+/// Chemical state for neuromodulator gating
+///
+/// Neuromodulators control WHEN learning happens:
+/// - Dopamine: "This is surprising/rewarding" → enable learning
+/// - Serotonin: "Things are going well" → moderate learning rate
+/// - Norepinephrine: "Pay attention!" → amplify signals
+/// - GABA: "Calm down" → inhibit runaway excitation
+///
+/// All values are 0-255 (like Signal magnitude).
+/// Learning requires dopamine > threshold (default: ~76, which is 0.3 * 255).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChemicalState {
+    /// Dopamine: gates learning (surprise/reward)
+    pub dopamine: u8,
+    /// Serotonin: scales learning rate
+    pub serotonin: u8,
+    /// Norepinephrine: amplifies attention
+    pub norepinephrine: u8,
+    /// GABA: inhibits excitation
+    pub gaba: u8,
+}
+
+impl ChemicalState {
+    /// Default threshold for dopamine gating (~0.3 on 0-1 scale)
+    pub const DOPAMINE_THRESHOLD: u8 = 76;
+
+    /// Create with all neuromodulators at baseline
+    pub fn baseline() -> Self {
+        Self {
+            dopamine: 128,      // Moderate surprise
+            serotonin: 128,     // Normal mood
+            norepinephrine: 128, // Normal attention
+            gaba: 128,          // Normal inhibition
+        }
+    }
+
+    /// Check if learning is enabled (dopamine above threshold)
+    pub fn learning_enabled(&self) -> bool {
+        self.dopamine >= Self::DOPAMINE_THRESHOLD
+    }
+
+    /// Get dopamine-based learning rate multiplier (0-4)
+    pub fn dopamine_scale(&self) -> i32 {
+        if self.dopamine < Self::DOPAMINE_THRESHOLD {
+            0 // No learning
+        } else {
+            // Scale from 1 (at threshold) to 4 (at max)
+            1 + (self.dopamine.saturating_sub(Self::DOPAMINE_THRESHOLD) as i32 / 64)
+        }
+    }
+}
+
 /// Ternsig Interpreter - NO FLOATS, pure integer/ternary
 pub struct Interpreter {
     program: Vec<Instruction>,
@@ -203,6 +255,8 @@ pub struct Interpreter {
     pub(super) babble_scale: i32,
     pub(super) babble_phase: usize,
     current_error: i32,
+    /// Chemical state for neuromodulator gating
+    pub chemical_state: ChemicalState,
 }
 
 impl Interpreter {
@@ -223,6 +277,7 @@ impl Interpreter {
             babble_scale: 0,
             babble_phase: 0,
             current_error: 0,
+            chemical_state: ChemicalState::baseline(),
         }
     }
 
