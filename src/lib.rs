@@ -1,14 +1,14 @@
-//! # Ternsig - TernarySignal Foundation
+//! # Ternsig - Signal Foundation
 //!
 //! The foundational crate that unlocked a new way of thinking about neural learning.
-//! TernarySignals (polarity + magnitude) replace floating-point weights entirely.
+//! Signals (polarity + magnitude) replace floating-point weights entirely.
 //!
 //! ## Core Components
 //!
-//! - **TernarySignal**: The fundamental unit (polarity ∈ {-1,0,+1}, magnitude ∈ 0-255)
-//! - **TensorISA**: Hot-reloadable neural network instruction set (.tisa.asm files)
+//! - **Signal**: The fundamental unit (s = p × m, polarity ∈ {-1,0,+1}, magnitude ∈ 0-255)
+//! - **Signal ISA**: Hot-reloadable neural network instruction set (.ternsig files)
 //! - **Adaptive Learning**: Mastery learning - 23ms updates, 90% accuracy threshold
-//! - **Thermogram Integration**: Persistent weight storage with temperature lifecycle
+//! - **Thermogram Integration**: Persistent signal storage with temperature lifecycle
 //!
 //! ## Three-Tier Learning System
 //!
@@ -18,29 +18,30 @@
 //!
 //! ## Design Principles
 //!
-//! - **No floats**: All weights are TernarySignal (2 bytes each)
+//! - **No floats**: All signals are Signal (2 bytes each)
 //! - **CPU-only**: Integer arithmetic, no GPU required
-//! - **Persistent**: All weights use thermograms (survive crashes)
-//! - **Hot-reloadable**: .tisa.asm files define network architecture
+//! - **Persistent**: All signals use thermograms (survive crashes)
+//! - **Hot-reloadable**: .ternsig files define network architecture
 //!
 //! ## Example
 //!
 //! ```ignore
-//! use ternsig::{TernarySignal, TensorInterpreter, assemble};
+//! use ternsig::{Signal, TensorInterpreter, assemble};
 //!
 //! // Load chip definition
-//! let program = assemble(include_str!("onset.tisa.asm"))?;
+//! let program = assemble(include_str!("onset.ternsig"))?;
 //! let mut interpreter = TensorInterpreter::new(&program)?;
 //!
-//! // Forward pass with ternary weights
+//! // Forward pass with ternary signals
 //! interpreter.set_input(&input_signals);
 //! interpreter.execute()?;
 //! let output = interpreter.get_output();
 //! ```
 
-// TernarySignal - The fundamental unit (owned by ternsig)
+// Signal - The fundamental unit (owned by ternsig)
 mod ternary;
-pub use ternary::{TernarySignal, Polarity};
+#[allow(deprecated)]
+pub use ternary::{Signal, TernarySignal, Polarity};
 
 // TensorISA - Hot-reloadable neural network definitions
 pub mod tensor_isa;

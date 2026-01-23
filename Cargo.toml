@@ -1,8 +1,8 @@
 [package]
 name = "ternsig"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
-description = "TernarySignal foundation - TensorISA, adaptive mastery learning, thermogram integration"
+description = "Signal foundation - Signal ISA, adaptive mastery learning, thermogram integration"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/blackfall-labs/ternsig"
 keywords = ["ternary", "neural", "learning", "cognitive", "cpu"]

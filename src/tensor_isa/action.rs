@@ -128,13 +128,13 @@ impl TensorAction {
 
     /// Ternary matrix multiply (integer-only): target = W.ternary @ input
     pub const TERNARY_MATMUL: Self = Self(0x4000);
-    /// Quantize f32 to TernarySignal
+    /// Quantize f32 to Signal
     pub const QUANTIZE: Self = Self(0x4001);
-    /// Dequantize TernarySignal to f32
+    /// Dequantize Signal to f32
     pub const DEQUANTIZE: Self = Self(0x4002);
-    /// Pack TernarySignal to 2-bit representation
+    /// Pack Signal to 2-bit representation
     pub const PACK_TERNARY: Self = Self(0x4003);
-    /// Unpack 2-bit to TernarySignal
+    /// Unpack 2-bit to Signal
     pub const UNPACK_TERNARY: Self = Self(0x4004);
     /// Apply polarity update to weight
     pub const APPLY_POLARITY: Self = Self(0x4005);
@@ -146,6 +146,33 @@ impl TensorAction {
     pub const ACCUMULATE_PRESSURE: Self = Self(0x4008);
     /// Ternary add with bias
     pub const TERNARY_ADD_BIAS: Self = Self(0x4009);
+    /// Embedding lookup: target[i] = table[indices[i]]
+    /// target = hot register for output, source = cold register (table), aux = hot register (indices)
+    pub const EMBED_LOOKUP: Self = Self(0x400A);
+    /// Reduce average: target[0] = mean(source[start..start+count])
+    /// Useful for band pooling in audio, spatial pooling, etc.
+    /// aux encodes start index, modifier[0] encodes count
+    pub const REDUCE_AVG: Self = Self(0x400B);
+    /// Slice: target = source[start..start+len]
+    /// aux encodes start index, modifier[0] encodes length
+    pub const SLICE: Self = Self(0x400C);
+    /// Argmax: target[0] = index of max value in source
+    pub const ARGMAX: Self = Self(0x400D);
+    /// Concat: target = concat(source, aux_reg)
+    /// Appends aux_reg values after source values
+    pub const CONCAT: Self = Self(0x400E);
+    /// Squeeze: target = source with dimension removed (aux = dim index)
+    /// For 1D tensors, this is effectively a no-op copy
+    pub const SQUEEZE: Self = Self(0x400F);
+    /// Unsqueeze: target = source with new dimension added (aux = dim index)
+    /// For 1D tensors, this is effectively a no-op copy
+    pub const UNSQUEEZE: Self = Self(0x4010);
+    /// Transpose: target = source with dims swapped (aux = dim1, modifier[0] = dim2)
+    /// For 1D tensors, this is effectively a no-op copy
+    pub const TRANSPOSE: Self = Self(0x4011);
+    /// Gate update: target = gate * update + (1 - gate) * state
+    /// source = gate values, aux = update register, modifier references state register
+    pub const GATE_UPDATE: Self = Self(0x4012);
 
     // =========================================================================
     // Learning Operations (0x50xx)
@@ -385,6 +412,15 @@ impl TensorAction {
             0x4007 => "THRESHOLD_POLARITY",
             0x4008 => "ACCUMULATE_PRESSURE",
             0x4009 => "TERNARY_ADD_BIAS",
+            0x400A => "EMBED_LOOKUP",
+            0x400B => "REDUCE_AVG",
+            0x400C => "SLICE",
+            0x400D => "ARGMAX",
+            0x400E => "CONCAT",
+            0x400F => "SQUEEZE",
+            0x4010 => "UNSQUEEZE",
+            0x4011 => "TRANSPOSE",
+            0x4012 => "GATE_UPDATE",
 
             // Learning
             0x5000 => "MARK_ELIGIBILITY",

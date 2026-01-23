@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! Hot Bank   (0x00-0x0F): Activations/intermediates (volatile, cleared between runs)
-//! Cold Bank  (0x10-0x1F): Weights (TernarySignal, persistent via Thermogram)
+//! Cold Bank  (0x10-0x1F): Weights (Signal, persistent via Thermogram)
 //! Param Bank (0x20-0x2F): Scalars (learning_rate, babble_scale, etc.)
 //! Shape Bank (0x30-0x3F): Dimension metadata
 //! ```
@@ -27,7 +27,7 @@ pub enum RegisterBank {
     Hot = 0x00,
 
     /// Cold registers: weights (persistent in Thermogram)
-    /// TernarySignal storage, survives restarts
+    /// Signal storage, survives restarts
     Cold = 0x10,
 
     /// Param registers: scalars (learning rate, etc.)
@@ -209,7 +209,7 @@ pub enum TensorDtype {
     F32 = 0,
     /// 32-bit signed integer (quantized activations)
     I32 = 1,
-    /// TernarySignal (polarity + magnitude)
+    /// Signal (polarity + magnitude)
     Ternary = 2,
     /// Packed ternary (2-bit per weight)
     PackedTernary = 3,

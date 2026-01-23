@@ -147,6 +147,87 @@ impl TensorInstruction {
         Self::new(TensorAction::MARK_ELIGIBILITY, output, input, layer_index, [0, 0, 0])
     }
 
+    /// Embedding lookup: target[i] = table[indices[i]]
+    /// table is a 2D cold register (num_embeddings x embedding_dim)
+    /// indices is a hot register with integer indices
+    /// output is a hot register receiving looked-up embeddings
+    pub const fn embed_lookup(
+        target: TensorRegister,
+        table: TensorRegister,
+        indices: TensorRegister,
+    ) -> Self {
+        Self::new(TensorAction::EMBED_LOOKUP, target, table, indices.0, [0, 0, 0])
+    }
+
+    /// Reduce average: target[0] = mean(source[start..start+count])
+    /// Useful for band pooling in audio, spatial pooling, etc.
+    pub const fn reduce_avg(
+        target: TensorRegister,
+        source: TensorRegister,
+        start: u8,
+        count: u8,
+    ) -> Self {
+        Self::new(TensorAction::REDUCE_AVG, target, source, start, [count, 0, 0])
+    }
+
+    /// Slice: target = source[start..start+len]
+    pub const fn slice(
+        target: TensorRegister,
+        source: TensorRegister,
+        start: u8,
+        len: u8,
+    ) -> Self {
+        Self::new(TensorAction::SLICE, target, source, start, [len, 0, 0])
+    }
+
+    /// Argmax: target[0] = index of max value in source
+    pub const fn argmax(target: TensorRegister, source: TensorRegister) -> Self {
+        Self::simple(TensorAction::ARGMAX, target, source)
+    }
+
+    /// Concat: target = concat(source, other)
+    pub const fn concat(
+        target: TensorRegister,
+        source: TensorRegister,
+        other: TensorRegister,
+    ) -> Self {
+        Self::new(TensorAction::CONCAT, target, source, other.0, [0, 0, 0])
+    }
+
+    /// Squeeze: target = source with dimension removed
+    /// For 1D Signal vectors, this is effectively a copy
+    pub const fn squeeze(target: TensorRegister, source: TensorRegister, dim: u8) -> Self {
+        Self::new(TensorAction::SQUEEZE, target, source, dim, [0, 0, 0])
+    }
+
+    /// Unsqueeze: target = source with dimension added
+    /// For 1D Signal vectors, this is effectively a copy
+    pub const fn unsqueeze(target: TensorRegister, source: TensorRegister, dim: u8) -> Self {
+        Self::new(TensorAction::UNSQUEEZE, target, source, dim, [0, 0, 0])
+    }
+
+    /// Transpose: target = source with dims swapped
+    /// For 1D Signal vectors, this is effectively a copy
+    pub const fn transpose(
+        target: TensorRegister,
+        source: TensorRegister,
+        dim1: u8,
+        dim2: u8,
+    ) -> Self {
+        Self::new(TensorAction::TRANSPOSE, target, source, dim1, [dim2, 0, 0])
+    }
+
+    /// Gate update: target = gate * update + (1 - gate) * state
+    /// Fused operation for gated recurrent updates (GRU-style)
+    pub const fn gate_update(
+        target: TensorRegister,
+        gate: TensorRegister,
+        update: TensorRegister,
+        state: TensorRegister,
+    ) -> Self {
+        Self::new(TensorAction::GATE_UPDATE, target, gate, update.0, [state.0, 0, 0])
+    }
+
     /// Dequantize: target = float(source) / scale
     pub fn dequantize(target: TensorRegister, source: TensorRegister, scale: u16) -> Self {
         let scale_bytes = scale.to_be_bytes();

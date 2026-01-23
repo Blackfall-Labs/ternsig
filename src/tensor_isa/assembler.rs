@@ -490,6 +490,72 @@ impl TensorAssembler {
                     [0, 0, 0],
                 ))
             }
+            "embed_lookup" => {
+                // embed_lookup target, table, indices
+                let target = self.parse_register_operand(ops.get(0))?;
+                let table = self.parse_register_operand(ops.get(1))?;
+                let indices = self.parse_register_operand(ops.get(2))?;
+                Ok(TensorInstruction::embed_lookup(target, table, indices))
+            }
+            "reduce_avg" => {
+                // reduce_avg target, source, start, count
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let start = self.parse_immediate(ops.get(2))? as u8;
+                let count = self.parse_immediate(ops.get(3))? as u8;
+                Ok(TensorInstruction::reduce_avg(target, source, start, count))
+            }
+            "slice" | "narrow" => {
+                // slice target, source, start, len
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let start = self.parse_immediate(ops.get(2))? as u8;
+                let len = self.parse_immediate(ops.get(3))? as u8;
+                Ok(TensorInstruction::slice(target, source, start, len))
+            }
+            "argmax" => {
+                // argmax target, source
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                Ok(TensorInstruction::argmax(target, source))
+            }
+            "concat" | "cat" => {
+                // concat target, source, other
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let other = self.parse_register_operand(ops.get(2))?;
+                Ok(TensorInstruction::concat(target, source, other))
+            }
+            "squeeze" => {
+                // squeeze target, source, dim
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let dim = self.parse_immediate(ops.get(2)).unwrap_or(0) as u8;
+                Ok(TensorInstruction::squeeze(target, source, dim))
+            }
+            "unsqueeze" => {
+                // unsqueeze target, source, dim
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let dim = self.parse_immediate(ops.get(2)).unwrap_or(0) as u8;
+                Ok(TensorInstruction::unsqueeze(target, source, dim))
+            }
+            "transpose" => {
+                // transpose target, source, dim1, dim2
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let dim1 = self.parse_immediate(ops.get(2)).unwrap_or(0) as u8;
+                let dim2 = self.parse_immediate(ops.get(3)).unwrap_or(1) as u8;
+                Ok(TensorInstruction::transpose(target, source, dim1, dim2))
+            }
+            "gate_update" => {
+                // gate_update target, gate, update, state
+                let target = self.parse_register_operand(ops.get(0))?;
+                let gate = self.parse_register_operand(ops.get(1))?;
+                let update = self.parse_register_operand(ops.get(2))?;
+                let state = self.parse_register_operand(ops.get(3))?;
+                Ok(TensorInstruction::gate_update(target, gate, update, state))
+            }
 
             // Control flow
             "loop" => {

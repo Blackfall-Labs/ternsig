@@ -38,7 +38,7 @@
 //! ```
 
 use super::{assemble, AssembledProgram, ColdBuffer, TensorInterpreter};
-use crate::TernarySignal;
+use crate::Signal;
 use anyhow::{Context, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -411,8 +411,8 @@ impl ReloadableInterpreter {
         self.reload_history.last()
     }
 
-    /// Forward pass with automatic reload check (TernarySignal API)
-    pub fn forward(&mut self, input: &[TernarySignal]) -> Result<Vec<TernarySignal>> {
+    /// Forward pass with automatic reload check (Signal API)
+    pub fn forward(&mut self, input: &[Signal]) -> Result<Vec<Signal>> {
         // Check for reload at safe point
         if self.interpreter.is_safe_reload_point() {
             self.check_reload()?;
@@ -476,13 +476,13 @@ mod tests {
         let mut interp = TensorInterpreter::from_program(&program1);
 
         // Set some weights
-        use crate::TernarySignal;
+        use crate::Signal;
         if let Some(cold) = interp.cold_reg_mut(0) {
-            cold.weights[0] = TernarySignal {
+            cold.weights[0] = Signal {
                 polarity: 1,
                 magnitude: 128,
             };
-            cold.weights[1] = TernarySignal {
+            cold.weights[1] = Signal {
                 polarity: -1,
                 magnitude: 64,
             };
@@ -521,9 +521,9 @@ mod tests {
         let mut interp = TensorInterpreter::from_program(&program);
 
         // Set weights
-        use crate::TernarySignal;
+        use crate::Signal;
         if let Some(cold) = interp.cold_reg_mut(0) {
-            cold.weights[0] = TernarySignal {
+            cold.weights[0] = Signal {
                 polarity: 1,
                 magnitude: 200,
             };
@@ -535,7 +535,7 @@ mod tests {
 
         // Clear weights
         if let Some(cold) = interp.cold_reg_mut(0) {
-            cold.weights[0] = TernarySignal::zero();
+            cold.weights[0] = Signal::zero();
         }
 
         // Restore

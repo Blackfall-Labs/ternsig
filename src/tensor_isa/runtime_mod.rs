@@ -28,7 +28,7 @@ use super::{
     ColdBuffer, HotBuffer, StepResult, TensorAction, TensorDtype, TensorInstruction,
     TensorInterpreter, TensorRegister,
 };
-use crate::TernarySignal;
+use crate::Signal;
 
 /// Shape specification for runtime allocation
 #[derive(Debug, Clone)]
@@ -391,7 +391,7 @@ impl ArchStats {
     /// Estimated memory usage in bytes
     pub fn memory_bytes(&self) -> usize {
         // Hot: i32 per element = 4 bytes
-        // Cold: TernarySignal per element = 2 bytes
+        // Cold: Signal per element = 2 bytes
         self.total_hot_elements * 4 + self.total_cold_elements * 2
     }
 }

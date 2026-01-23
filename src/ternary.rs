@@ -1,31 +1,33 @@
-//! TernarySignal - The fundamental unit of neural communication
+//! Signal - The fundamental unit of neural communication
+//!
+//! Everything that flows is a Signal: `s = p × m`
 //!
 //! Compact 2-byte representation: polarity (-1, 0, +1) + magnitude (0-255).
 //!
-//! # Why Ternary?
+//! # Why Signal?
 //!
 //! Biological neurons communicate through:
 //! - **Polarity**: Excitatory (+1) or inhibitory (-1) or silent (0)
-//! - **Magnitude**: Firing rate / signal strength
+//! - **Magnitude**: Firing rate / signal strength (0-255)
 //!
 //! This maps perfectly to a 2-byte representation that's cache-friendly
 //! and avoids floating-point precision issues.
 //!
 //! # Example
 //! ```
-//! use ternsig::{TernarySignal, Polarity};
+//! use ternsig::{Signal, Polarity};
 //!
 //! // Strong positive signal
-//! let excited = TernarySignal::positive(200);
+//! let excited = Signal::positive(200);
 //! assert!(excited.is_positive());
 //! assert!(excited.magnitude_f32() > 0.7);
 //!
 //! // Using Polarity enum (type-safe)
-//! let inhibited = TernarySignal::with_polarity(Polarity::Negative, 50);
+//! let inhibited = Signal::with_polarity(Polarity::Negative, 50);
 //! assert!(inhibited.is_negative());
 //!
 //! // No signal
-//! let neutral = TernarySignal::zero();
+//! let neutral = Signal::zero();
 //! assert!(!neutral.is_active());
 //! ```
 
@@ -99,7 +101,7 @@ impl TryFrom<i8> for Polarity {
     }
 }
 
-/// Ternary signal: polarity + magnitude
+/// Signal: polarity + magnitude (s = p × m)
 ///
 /// The fundamental unit of neural communication.
 /// Compact 2-byte representation:
@@ -108,14 +110,18 @@ impl TryFrom<i8> for Polarity {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[repr(C)]
-pub struct TernarySignal {
+pub struct Signal {
     /// Polarity: -1 (inhibited), 0 (neutral), +1 (excited)
     pub polarity: i8,
     /// Magnitude: 0-255 (intensity, maps to 0.0-1.0)
     pub magnitude: u8,
 }
 
-impl TernarySignal {
+/// Deprecated alias for backwards compatibility
+#[deprecated(since = "0.5.0", note = "Use Signal instead")]
+pub type TernarySignal = Signal;
+
+impl Signal {
     /// Zero signal (no activity)
     pub const ZERO: Self = Self { polarity: 0, magnitude: 0 };
 
@@ -300,6 +306,82 @@ impl TernarySignal {
             magnitude: new_mag,
         }
     }
+
+    // =========================================================================
+    // Smooth Transition Methods (Signal Semantics)
+    //
+    // CRITICAL: Signals step toward targets, NEVER jump.
+    // This enforces the fundamental constraint that neural signals are
+    // continuous flows, not discrete events.
+    // =========================================================================
+
+    /// Step toward target by one unit
+    ///
+    /// Signals represent continuous neural flow. They MUST step toward
+    /// targets smoothly, never teleport. This is enforced at the type level.
+    ///
+    /// # Example
+    /// ```
+    /// use ternsig::Signal;
+    ///
+    /// let current = Signal::positive(100);
+    /// let target = Signal::positive(200);
+    /// let next = current.step_toward(&target);
+    /// assert_eq!(next.magnitude, 101); // Moved by 1
+    /// ```
+    #[inline]
+    pub fn step_toward(&self, target: &Self) -> Self {
+        self.step_toward_by(target, 1)
+    }
+
+    /// Step toward target by specified delta
+    ///
+    /// Larger delta = faster approach, but still smooth (no teleporting).
+    /// Polarity changes happen smoothly through zero.
+    #[inline]
+    pub fn step_toward_by(&self, target: &Self, delta: u8) -> Self {
+        // Convert to signed representation for smooth transitions
+        let current = self.polarity as i16 * self.magnitude as i16;
+        let target_val = target.polarity as i16 * target.magnitude as i16;
+
+        let diff = target_val - current;
+
+        if diff.abs() <= delta as i16 {
+            // Close enough - snap to target
+            *target
+        } else if diff > 0 {
+            // Need to increase (toward positive or less negative)
+            let new_val = current + delta as i16;
+            Self::from_signed_i32(new_val as i32)
+        } else {
+            // Need to decrease (toward negative or less positive)
+            let new_val = current - delta as i16;
+            Self::from_signed_i32(new_val as i32)
+        }
+    }
+
+    /// Step toward target by fractional amount (0.0 to 1.0)
+    ///
+    /// Useful for rate-limited smooth transitions where you want
+    /// proportional approach rather than fixed delta.
+    #[inline]
+    pub fn step_toward_ratio(&self, target: &Self, ratio: f32) -> Self {
+        let current = self.polarity as i16 * self.magnitude as i16;
+        let target_val = target.polarity as i16 * target.magnitude as i16;
+
+        let diff = target_val - current;
+        let delta = ((diff.abs() as f32 * ratio.clamp(0.0, 1.0)).ceil() as i16).max(1);
+
+        self.step_toward_by(target, delta as u8)
+    }
+
+    /// Check if this signal has reached the target (within tolerance)
+    #[inline]
+    pub fn reached(&self, target: &Self, tolerance: u8) -> bool {
+        let current = self.polarity as i16 * self.magnitude as i16;
+        let target_val = target.polarity as i16 * target.magnitude as i16;
+        (current - target_val).abs() <= tolerance as i16
+    }
 }
 
 #[cfg(test)]
@@ -307,39 +389,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ternary_signal_creation() {
-        let zero = TernarySignal::zero();
+    fn test_signal_creation() {
+        let zero = Signal::zero();
         assert!(!zero.is_active());
         assert_eq!(zero.polarity, 0);
         assert_eq!(zero.magnitude, 0);
 
-        let pos = TernarySignal::positive(200);
+        let pos = Signal::positive(200);
         assert!(pos.is_positive());
         assert!(pos.is_active());
         assert!((pos.magnitude_f32() - 0.784).abs() < 0.01);
 
-        let neg = TernarySignal::negative(128);
+        let neg = Signal::negative(128);
         assert!(neg.is_negative());
         assert!((neg.as_signed_f32() - (-0.502)).abs() < 0.01);
     }
 
     #[test]
     fn test_from_signed() {
-        let from_pos = TernarySignal::from_signed(0.75);
+        let from_pos = Signal::from_signed(0.75);
         assert_eq!(from_pos.polarity, 1);
         assert!((from_pos.magnitude_f32() - 0.75).abs() < 0.01);
 
-        let from_neg = TernarySignal::from_signed(-0.5);
+        let from_neg = Signal::from_signed(-0.5);
         assert_eq!(from_neg.polarity, -1);
         assert!((from_neg.magnitude_f32() - 0.5).abs() < 0.01);
 
-        let from_zero = TernarySignal::from_signed(0.005);
+        let from_zero = Signal::from_signed(0.005);
         assert_eq!(from_zero.polarity, 0);
     }
 
     #[test]
     fn test_decay() {
-        let mut signal = TernarySignal::positive(200);
+        let mut signal = Signal::positive(200);
         signal.decay(0.5);
         assert_eq!(signal.magnitude, 100);
         assert!(signal.is_positive());
@@ -354,21 +436,21 @@ mod tests {
 
     #[test]
     fn test_add() {
-        let a = TernarySignal::positive(100);
-        let b = TernarySignal::positive(100);
+        let a = Signal::positive(100);
+        let b = Signal::positive(100);
         let sum = a.add(&b);
         assert!(sum.is_positive());
         assert!(sum.magnitude > 150); // ~200
 
         // Opposite polarities cancel
-        let c = TernarySignal::negative(100);
+        let c = Signal::negative(100);
         let cancel = a.add(&c);
         assert!(!cancel.is_active() || cancel.magnitude < 10);
     }
 
     #[test]
     fn test_size() {
-        assert_eq!(std::mem::size_of::<TernarySignal>(), 2);
+        assert_eq!(std::mem::size_of::<Signal>(), 2);
     }
 
     #[test]
@@ -390,21 +472,113 @@ mod tests {
 
     #[test]
     fn test_with_polarity() {
-        let pos = TernarySignal::with_polarity(Polarity::Positive, 200);
+        let pos = Signal::with_polarity(Polarity::Positive, 200);
         assert_eq!(pos.polarity, 1);
         assert_eq!(pos.magnitude, 200);
 
-        let neg = TernarySignal::with_polarity(Polarity::Negative, 100);
+        let neg = Signal::with_polarity(Polarity::Negative, 100);
         assert_eq!(neg.polarity, -1);
         assert_eq!(neg.get_polarity(), Polarity::Negative);
     }
 
     #[test]
     fn test_new_checked() {
-        assert!(TernarySignal::new_checked(1, 100).is_some());
-        assert!(TernarySignal::new_checked(0, 0).is_some());
-        assert!(TernarySignal::new_checked(-1, 50).is_some());
-        assert!(TernarySignal::new_checked(2, 100).is_none());
-        assert!(TernarySignal::new_checked(-5, 100).is_none());
+        assert!(Signal::new_checked(1, 100).is_some());
+        assert!(Signal::new_checked(0, 0).is_some());
+        assert!(Signal::new_checked(-1, 50).is_some());
+        assert!(Signal::new_checked(2, 100).is_none());
+        assert!(Signal::new_checked(-5, 100).is_none());
+    }
+
+    // =========================================================================
+    // Smooth Transition Tests (Signal Semantics)
+    // =========================================================================
+
+    #[test]
+    fn test_step_toward_same() {
+        let signal = Signal::positive(100);
+        let target = Signal::positive(100);
+        let result = signal.step_toward(&target);
+        assert_eq!(result.polarity, target.polarity);
+        assert_eq!(result.magnitude, target.magnitude);
+    }
+
+    #[test]
+    fn test_step_toward_increase() {
+        let signal = Signal::positive(100);
+        let target = Signal::positive(200);
+        let result = signal.step_toward(&target);
+        assert_eq!(result.polarity, 1);
+        assert_eq!(result.magnitude, 101); // Increased by 1
+    }
+
+    #[test]
+    fn test_step_toward_decrease() {
+        let signal = Signal::positive(100);
+        let target = Signal::positive(50);
+        let result = signal.step_toward(&target);
+        assert_eq!(result.polarity, 1);
+        assert_eq!(result.magnitude, 99); // Decreased by 1
+    }
+
+    #[test]
+    fn test_step_toward_polarity_change() {
+        // Crossing zero must happen smoothly
+        let signal = Signal::positive(2);
+        let target = Signal::negative(100);
+
+        // First step decreases toward zero
+        let step1 = signal.step_toward(&target);
+        assert_eq!(step1.polarity, 1);
+        assert_eq!(step1.magnitude, 1);
+
+        // Second step reaches zero
+        let step2 = step1.step_toward(&target);
+        assert_eq!(step2.polarity, 0);
+        assert_eq!(step2.magnitude, 0);
+
+        // Third step goes negative
+        let step3 = step2.step_toward(&target);
+        assert_eq!(step3.polarity, -1);
+        assert_eq!(step3.magnitude, 1);
+    }
+
+    #[test]
+    fn test_step_toward_by_delta() {
+        let signal = Signal::positive(100);
+        let target = Signal::positive(200);
+        let result = signal.step_toward_by(&target, 10);
+        assert_eq!(result.polarity, 1);
+        assert_eq!(result.magnitude, 110); // Increased by 10
+    }
+
+    #[test]
+    fn test_step_toward_snap_when_close() {
+        let signal = Signal::positive(100);
+        let target = Signal::positive(105);
+        let result = signal.step_toward_by(&target, 10);
+        // Should snap to target when difference < delta
+        assert_eq!(result, target);
+    }
+
+    #[test]
+    fn test_reached() {
+        let signal = Signal::positive(100);
+        let target = Signal::positive(102);
+
+        assert!(!signal.reached(&target, 1));
+        assert!(signal.reached(&target, 2));
+        assert!(signal.reached(&target, 10));
+    }
+
+    #[test]
+    fn test_step_toward_ratio() {
+        let signal = Signal::positive(0);
+        let target = Signal::positive(100);
+
+        // 10% approach
+        let result = signal.step_toward_ratio(&target, 0.1);
+        assert_eq!(result.polarity, 1);
+        assert!(result.magnitude >= 10 && result.magnitude <= 11);
     }
 }

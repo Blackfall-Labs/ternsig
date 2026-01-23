@@ -10,7 +10,7 @@
 //! │              TensorInterpreter                   │
 //! ├─────────────────────────────────────────────────┤
 //! │  Hot Regs [H0-HF]:  Vec<i32> activations        │
-//! │  Cold Regs [C0-CF]: Vec<TernarySignal> weights  │
+//! │  Cold Regs [C0-CF]: Vec<Signal> weights  │
 //! │  Param Regs [P0-PF]: i32 scalars                │
 //! │  Shape Regs [S0-SF]: Vec<usize> shapes          │
 //! ├─────────────────────────────────────────────────┤
@@ -21,7 +21,7 @@
 
 use super::{AssembledProgram, RegisterMeta, TensorAction, TensorDtype, TensorInstruction, TensorRegister};
 use std::collections::VecDeque;
-use crate::TernarySignal;
+use crate::Signal;
 
 /// Result of executing a single instruction
 #[derive(Debug, Clone)]
@@ -86,8 +86,8 @@ impl HotBuffer {
         Self::new(shape)
     }
 
-    /// Create from TernarySignal slice
-    pub fn from_ternary(signals: &[TernarySignal], shape: Vec<usize>) -> Self {
+    /// Create from Signal slice
+    pub fn from_ternary(signals: &[Signal], shape: Vec<usize>) -> Self {
         let data: Vec<i32> = signals
             .iter()
             .map(|s| s.polarity as i32 * s.magnitude as i32)
@@ -95,9 +95,9 @@ impl HotBuffer {
         Self { data, shape }
     }
 
-    /// Convert to TernarySignal vec
-    pub fn to_ternary(&self) -> Vec<TernarySignal> {
-        self.data.iter().map(|&v| TernarySignal::from_signed_i32(v)).collect()
+    /// Convert to Signal vec
+    pub fn to_ternary(&self) -> Vec<Signal> {
+        self.data.iter().map(|&v| Signal::from_signed_i32(v)).collect()
     }
 
     pub fn numel(&self) -> usize {
@@ -108,8 +108,8 @@ impl HotBuffer {
 /// Cold register (weight buffer)
 #[derive(Debug, Clone)]
 pub struct ColdBuffer {
-    /// Weights as TernarySignal
-    pub weights: Vec<TernarySignal>,
+    /// Weights as Signal
+    pub weights: Vec<Signal>,
     /// Shape
     pub shape: Vec<usize>,
     /// Thermogram key for persistence
@@ -122,7 +122,7 @@ impl ColdBuffer {
     pub fn new(shape: Vec<usize>) -> Self {
         let size: usize = shape.iter().product();
         Self {
-            weights: vec![TernarySignal::zero(); size],
+            weights: vec![Signal::zero(); size],
             shape,
             thermogram_key: None,
             frozen: false,
@@ -140,12 +140,12 @@ impl ColdBuffer {
     }
 
     /// Get immutable reference to weights.
-    pub fn weights(&self) -> &[TernarySignal] {
+    pub fn weights(&self) -> &[Signal] {
         &self.weights
     }
 
     /// Get mutable reference to weights.
-    pub fn weights_mut(&mut self) -> &mut [TernarySignal] {
+    pub fn weights_mut(&mut self) -> &mut [Signal] {
         &mut self.weights
     }
 
@@ -247,8 +247,8 @@ impl TensorInterpreter {
         }
     }
 
-    /// Set input buffer from TernarySignal (primary API)
-    pub fn set_input(&mut self, input: &[TernarySignal]) {
+    /// Set input buffer from Signal (primary API)
+    pub fn set_input(&mut self, input: &[Signal]) {
         self.input_buffer = input
             .iter()
             .map(|s| s.polarity as i32 * s.magnitude as i32)
@@ -261,7 +261,7 @@ impl TensorInterpreter {
     }
 
     /// Set target buffer (called before learning pass)
-    pub fn set_target(&mut self, target: &[TernarySignal]) {
+    pub fn set_target(&mut self, target: &[Signal]) {
         self.target_buffer = target
             .iter()
             .map(|s| s.polarity as i32 * s.magnitude as i32)
@@ -278,11 +278,11 @@ impl TensorInterpreter {
         &self.output_buffer
     }
 
-    /// Get output buffer as TernarySignal
-    pub fn output(&self) -> Vec<TernarySignal> {
+    /// Get output buffer as Signal
+    pub fn output(&self) -> Vec<Signal> {
         self.output_buffer
             .iter()
-            .map(|&v| TernarySignal::from_signed_i32(v))
+            .map(|&v| Signal::from_signed_i32(v))
             .collect()
     }
 
@@ -344,8 +344,8 @@ impl TensorInterpreter {
         }
     }
 
-    /// Forward pass: set input, run, get output (TernarySignal API)
-    pub fn forward(&mut self, input: &[TernarySignal]) -> Result<Vec<TernarySignal>, String> {
+    /// Forward pass: set input, run, get output (Signal API)
+    pub fn forward(&mut self, input: &[Signal]) -> Result<Vec<Signal>, String> {
         self.set_input(input);
         self.reset();
 
@@ -429,6 +429,15 @@ impl TensorInterpreter {
             // === Ternary Ops ===
             TensorAction::DEQUANTIZE => self.execute_dequantize(instr),
             TensorAction::TERNARY_ADD_BIAS => self.execute_ternary_add_bias(instr),
+            TensorAction::EMBED_LOOKUP => self.execute_embed_lookup(instr),
+            TensorAction::REDUCE_AVG => self.execute_reduce_avg(instr),
+            TensorAction::SLICE => self.execute_slice(instr),
+            TensorAction::ARGMAX => self.execute_argmax(instr),
+            TensorAction::CONCAT => self.execute_concat(instr),
+            TensorAction::SQUEEZE => self.execute_squeeze(instr),
+            TensorAction::UNSQUEEZE => self.execute_unsqueeze(instr),
+            TensorAction::TRANSPOSE => self.execute_transpose(instr),
+            TensorAction::GATE_UPDATE => self.execute_gate_update(instr),
 
             // === Learning Ops ===
             TensorAction::ADD_BABBLE => self.execute_add_babble(instr),
@@ -794,6 +803,282 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
+    fn execute_embed_lookup(&mut self, instr: TensorInstruction) -> StepResult {
+        // EMBED_LOOKUP: target[i] = table[indices[i]]
+        // target = output hot register
+        // source = embedding table (cold, 2D: num_embeddings x embedding_dim)
+        // aux = indices hot register
+
+        let table_idx = instr.source.index();
+        let indices_idx = instr.aux as usize & 0x0F;
+        let output_idx = instr.target.index();
+
+        // Get embedding table
+        let table = match &self.cold_regs[table_idx] {
+            Some(buf) => buf,
+            None => return StepResult::Error(format!("Embedding table C{} not allocated", table_idx)),
+        };
+
+        // Get indices
+        let indices = match &self.hot_regs[indices_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("Indices H{} not allocated", indices_idx)),
+        };
+
+        // Table shape: [num_embeddings, embedding_dim]
+        let (num_embeddings, embedding_dim) = if table.shape.len() >= 2 {
+            (table.shape[0], table.shape[1])
+        } else if table.shape.len() == 1 {
+            // 1D table: treat as single embedding
+            (1, table.shape[0])
+        } else {
+            return StepResult::Error("Embedding table must have shape".to_string());
+        };
+
+        // Output shape: [num_indices, embedding_dim]
+        let num_indices = indices.len();
+        let mut output_data = vec![0i32; num_indices * embedding_dim];
+
+        for (i, &idx_val) in indices.iter().enumerate() {
+            let idx = idx_val.max(0) as usize;
+            if idx < num_embeddings {
+                // Copy embedding for this index
+                let table_offset = idx * embedding_dim;
+                for d in 0..embedding_dim {
+                    if table_offset + d < table.weights.len() {
+                        let w = &table.weights[table_offset + d];
+                        output_data[i * embedding_dim + d] = w.polarity as i32 * w.magnitude as i32;
+                    }
+                }
+            }
+            // Out-of-bounds indices get zeros (already initialized)
+        }
+
+        self.hot_regs[output_idx] = Some(HotBuffer {
+            data: output_data,
+            shape: vec![num_indices, embedding_dim],
+        });
+
+        StepResult::Continue
+    }
+
+    fn execute_reduce_avg(&mut self, instr: TensorInstruction) -> StepResult {
+        // REDUCE_AVG: target[0] = mean(source[start..start+count])
+        // target = output hot register (single element)
+        // source = input hot register
+        // aux = start index
+        // modifier[0] = count
+
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+        let start = instr.aux as usize;
+        let count = instr.modifier[0] as usize;
+
+        let src = match &self.hot_regs[src_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("Source H{} not allocated", src_idx)),
+        };
+
+        if count == 0 {
+            // Zero count = zero output
+            self.hot_regs[dst_idx] = Some(HotBuffer {
+                data: vec![0],
+                shape: vec![1],
+            });
+            return StepResult::Continue;
+        }
+
+        // Sum the range
+        let end = (start + count).min(src.len());
+        let actual_count = end.saturating_sub(start);
+
+        let sum: i32 = src.get(start..end)
+            .map(|slice| slice.iter().sum())
+            .unwrap_or(0);
+
+        let avg = if actual_count > 0 {
+            sum / actual_count as i32
+        } else {
+            0
+        };
+
+        self.hot_regs[dst_idx] = Some(HotBuffer {
+            data: vec![avg],
+            shape: vec![1],
+        });
+
+        StepResult::Continue
+    }
+
+    fn execute_slice(&mut self, instr: TensorInstruction) -> StepResult {
+        // SLICE: target = source[start..start+len]
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+        let start = instr.aux as usize;
+        let len = instr.modifier[0] as usize;
+
+        let src = match &self.hot_regs[src_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("Source H{} not allocated", src_idx)),
+        };
+
+        let end = (start + len).min(src.len());
+        let slice_data: Vec<i32> = src.get(start..end)
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
+
+        let slice_len = slice_data.len();
+        self.hot_regs[dst_idx] = Some(HotBuffer {
+            data: slice_data,
+            shape: vec![slice_len],
+        });
+
+        StepResult::Continue
+    }
+
+    fn execute_argmax(&mut self, instr: TensorInstruction) -> StepResult {
+        // ARGMAX: target[0] = index of max value in source
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+
+        let src = match &self.hot_regs[src_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("Source H{} not allocated", src_idx)),
+        };
+
+        let max_idx = if src.is_empty() {
+            0
+        } else {
+            src.iter()
+                .enumerate()
+                .max_by_key(|(_, v)| *v)
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        };
+
+        self.hot_regs[dst_idx] = Some(HotBuffer {
+            data: vec![max_idx as i32],
+            shape: vec![1],
+        });
+
+        StepResult::Continue
+    }
+
+    fn execute_concat(&mut self, instr: TensorInstruction) -> StepResult {
+        // CONCAT: target = concat(source, other)
+        let src_idx = instr.source.index();
+        let other_idx = instr.aux as usize & 0x0F;
+        let dst_idx = instr.target.index();
+
+        let src = match &self.hot_regs[src_idx] {
+            Some(buf) => buf.data.clone(),
+            None => return StepResult::Error(format!("Source H{} not allocated", src_idx)),
+        };
+
+        let other = match &self.hot_regs[other_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("Other H{} not allocated", other_idx)),
+        };
+
+        let mut result = src;
+        result.extend_from_slice(other);
+        let len = result.len();
+
+        self.hot_regs[dst_idx] = Some(HotBuffer {
+            data: result,
+            shape: vec![len],
+        });
+
+        StepResult::Continue
+    }
+
+    fn execute_squeeze(&mut self, instr: TensorInstruction) -> StepResult {
+        // SQUEEZE: For 1D signals, this is effectively a copy
+        // In higher-dimensional contexts, removes dim of size 1
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+
+        if let Some(buf) = self.hot_regs[src_idx].clone() {
+            self.hot_regs[dst_idx] = Some(buf);
+        }
+
+        StepResult::Continue
+    }
+
+    fn execute_unsqueeze(&mut self, instr: TensorInstruction) -> StepResult {
+        // UNSQUEEZE: For 1D signals, this is effectively a copy
+        // In higher-dimensional contexts, adds dim of size 1
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+
+        if let Some(buf) = self.hot_regs[src_idx].clone() {
+            self.hot_regs[dst_idx] = Some(buf);
+        }
+
+        StepResult::Continue
+    }
+
+    fn execute_transpose(&mut self, instr: TensorInstruction) -> StepResult {
+        // TRANSPOSE: For 1D signals, this is effectively a copy
+        // In higher-dimensional contexts, swaps dimensions
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+
+        if let Some(buf) = self.hot_regs[src_idx].clone() {
+            self.hot_regs[dst_idx] = Some(buf);
+        }
+
+        StepResult::Continue
+    }
+
+    fn execute_gate_update(&mut self, instr: TensorInstruction) -> StepResult {
+        // GATE_UPDATE: target = gate * update + (1 - gate) * state
+        // Fused operation for GRU-style gated updates
+        // source = gate register (hot)
+        // aux = update register (hot)
+        // modifier[0] = state register (hot)
+        let gate_idx = instr.source.index();
+        let update_idx = instr.aux as usize & 0x0F;
+        let state_idx = instr.modifier[0] as usize & 0x0F;
+        let dst_idx = instr.target.index();
+
+        let gate = match &self.hot_regs[gate_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("Gate H{} not allocated", gate_idx)),
+        };
+
+        let update = match &self.hot_regs[update_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("Update H{} not allocated", update_idx)),
+        };
+
+        let state = match &self.hot_regs[state_idx] {
+            Some(buf) => &buf.data,
+            None => return StepResult::Error(format!("State H{} not allocated", state_idx)),
+        };
+
+        // gate values are in integer range after sigmoid (0-255 scaled)
+        // For proper gating: result = (gate * update + (255 - gate) * state) / 255
+        let len = gate.len().min(update.len()).min(state.len());
+        let mut result = Vec::with_capacity(len);
+
+        for i in 0..len {
+            let g = gate[i].clamp(0, 255) as i64;
+            let u = update[i] as i64;
+            let s = state[i] as i64;
+            // Fused: gate * update + (255 - gate) * state, scaled back
+            let val = (g * u + (255 - g) * s) / 255;
+            result.push(val as i32);
+        }
+
+        self.hot_regs[dst_idx] = Some(HotBuffer {
+            data: result,
+            shape: vec![len],
+        });
+
+        StepResult::Continue
+    }
+
     fn execute_load_target(&mut self, instr: TensorInstruction) -> StepResult {
         let idx = instr.target.index();
 
@@ -1091,12 +1376,12 @@ mod tests {
         let program = assemble(source).unwrap();
         let mut interp = TensorInterpreter::from_program(&program);
 
-        // Input as TernarySignal
+        // Input as Signal
         let input = vec![
-            TernarySignal::positive(128), // ~0.5
-            TernarySignal::negative(77),  // ~-0.3
-            TernarySignal::positive(204), // ~0.8
-            TernarySignal::zero(),        // 0
+            Signal::positive(128), // ~0.5
+            Signal::negative(77),  // ~-0.3
+            Signal::positive(204), // ~0.8
+            Signal::zero(),        // 0
         ];
         let output = interp.forward(&input).unwrap();
 
@@ -1125,12 +1410,12 @@ mod tests {
         let program = assemble(source).unwrap();
         let mut interp = TensorInterpreter::from_program(&program);
 
-        // Input as TernarySignal
+        // Input as Signal
         let input = vec![
-            TernarySignal::positive(128), // positive
-            TernarySignal::negative(77),  // negative
-            TernarySignal::positive(204), // positive
-            TernarySignal::negative(128), // negative
+            Signal::positive(128), // positive
+            Signal::negative(77),  // negative
+            Signal::positive(204), // positive
+            Signal::negative(128), // negative
         ];
         let output = interp.forward(&input).unwrap();
 

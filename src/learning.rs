@@ -1,4 +1,4 @@
-//! Mastery Learning - Pure integer adaptive learning for TernarySignal weights
+//! Mastery Learning - Pure integer adaptive learning for Signal weights
 //!
 //! Based on the paradigm shift: learning is refinement of existing structure,
 //! not construction from nothing.
@@ -20,7 +20,7 @@
 //!
 //! This is real-time cognition, not batch training.
 
-use crate::TernarySignal;
+use crate::Signal;
 
 /// Mastery learning configuration - all integers
 #[derive(Debug, Clone)]
@@ -126,7 +126,7 @@ impl MasteryState {
 ///
 /// Number of weights updated this step
 pub fn mastery_update(
-    weights: &mut [TernarySignal],
+    weights: &mut [Signal],
     state: &mut MasteryState,
     activations: &[i32],
     direction: i32,
@@ -210,7 +210,7 @@ pub fn mastery_update(
 /// Weights start with ±1 polarity and moderate magnitude (20-40).
 /// This provides structure for learning to refine, rather than
 /// requiring structure to emerge from nothing.
-pub fn init_random_structure(n_weights: usize, seed: u64) -> Vec<TernarySignal> {
+pub fn init_random_structure(n_weights: usize, seed: u64) -> Vec<Signal> {
     (0..n_weights)
         .map(|i| {
             // Simple deterministic hash
@@ -225,18 +225,18 @@ pub fn init_random_structure(n_weights: usize, seed: u64) -> Vec<TernarySignal> 
             // Moderate magnitude (20-40)
             let magnitude = ((hash >> 3) % 20) as u8 + 20;
 
-            TernarySignal { polarity, magnitude }
+            Signal { polarity, magnitude }
         })
         .collect()
 }
 
 /// Initialize bias with positive polarity (helps ReLU survival)
-pub fn init_positive_bias(n_bias: usize, seed: u64) -> Vec<TernarySignal> {
+pub fn init_positive_bias(n_bias: usize, seed: u64) -> Vec<Signal> {
     (0..n_bias)
         .map(|i| {
             let hash = (i as u64).wrapping_mul(41).wrapping_add(seed);
             let magnitude = ((hash >> 2) % 15) as u8 + 10; // 10-25
-            TernarySignal {
+            Signal {
                 polarity: 1, // Positive to help ReLU
                 magnitude,
             }
@@ -252,12 +252,12 @@ pub fn compute_participation_mask(activations: &[i32], divisor: i32) -> Vec<bool
 }
 
 /// Count active weights (non-zero polarity)
-pub fn count_active(weights: &[TernarySignal]) -> usize {
+pub fn count_active(weights: &[Signal]) -> usize {
     weights.iter().filter(|w| w.polarity != 0).count()
 }
 
 /// Compute sparsity (fraction of zero weights)
-pub fn sparsity(weights: &[TernarySignal]) -> f32 {
+pub fn sparsity(weights: &[Signal]) -> f32 {
     let active = count_active(weights);
     1.0 - (active as f32 / weights.len() as f32)
 }
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn test_mastery_update_strengthens() {
-        let mut weights = vec![TernarySignal::new(1, 50)]; // Already positive
+        let mut weights = vec![Signal::new(1, 50)]; // Already positive
         let mut state = MasteryState::new(1);
         let config = MasteryConfig {
             magnitude_step: 5,
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_mastery_update_weakens_then_flips() {
-        let mut weights = vec![TernarySignal::new(1, 10)]; // Positive, low magnitude
+        let mut weights = vec![Signal::new(1, 10)]; // Positive, low magnitude
         let mut state = MasteryState::new(1);
         let config = MasteryConfig {
             magnitude_step: 5,
@@ -370,8 +370,8 @@ mod tests {
     #[test]
     fn test_non_participating_neurons_unchanged() {
         let mut weights = vec![
-            TernarySignal::new(1, 50),
-            TernarySignal::new(1, 50),
+            Signal::new(1, 50),
+            Signal::new(1, 50),
         ];
         let mut state = MasteryState::new(2);
         let config = MasteryConfig::default();

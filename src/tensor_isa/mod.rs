@@ -24,14 +24,14 @@
 //!
 //! ```text
 //! Hot Bank   (0x00-0x0F): Activations/intermediates (volatile)
-//! Cold Bank  (0x10-0x1F): Weights (TernarySignal, persistent via Thermogram)
+//! Cold Bank  (0x10-0x1F): Weights (Signal, persistent via Thermogram)
 //! Param Bank (0x20-0x2F): Scalars (learning_rate, babble_scale, etc.)
 //! Shape Bank (0x30-0x3F): Dimension metadata
 //! ```
 //!
 //! ## Design Principles
 //!
-//! - All cold registers store TernarySignal weights (2 bytes each)
+//! - All cold registers store Signal weights (2 bytes each)
 //! - TERNARY_MATMUL uses CPU integer arithmetic only (no floats, no GPU)
 //! - Weights persist via Thermogram with temperature lifecycle
 //! - Programs are hot-reloadable without Rust recompilation
@@ -77,8 +77,8 @@ pub use hot_reload::{
 };
 pub use runtime_mod::{ArchStats, ModEvent, ShapeSpec, WireSpec, WireType};
 
-// Re-export TernarySignal for users of ColdBuffer
-pub use crate::TernarySignal;
+// Re-export Signal for users of ColdBuffer
+pub use crate::Signal;
 
 /// Instruction size in bytes (extended from 6-byte ISA pattern)
 pub const TENSOR_INSTRUCTION_SIZE: usize = 8;

@@ -1,19 +1,19 @@
 //! Thermogram Bridge for TensorISA
 //!
-//! Provides persistence for cold registers (TernarySignal weights) via Thermogram.
+//! Provides persistence for cold registers (Signal weights) via Thermogram.
 //! Weights are stored with thermal state tracking (hot/warm/cold/frozen) and
 //! survive restarts.
 //!
 //! ## Features
 //!
 //! - All cognitive state persists through crashes via Thermogram
-//! - Weights stored as TernarySignal (polarity + magnitude)
+//! - Weights stored as Signal (polarity + magnitude)
 //! - Temperature lifecycle: HOT → WARM → COOL → COLD
 
 use crate::tensor_isa::{ColdBuffer, TensorInterpreter};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use crate::TernarySignal;
+use crate::Signal;
 use thermogram::{Delta, PlasticityRule, ThermalConfig, Thermogram};
 
 /// Content types stored in TensorThermogram
@@ -64,12 +64,12 @@ impl WeightContent {
         }
     }
 
-    /// Convert to TernarySignal array
-    pub fn to_ternary_signals(&self) -> Vec<TernarySignal> {
+    /// Convert to Signal array
+    pub fn to_ternary_signals(&self) -> Vec<Signal> {
         self.polarities
             .iter()
             .zip(self.magnitudes.iter())
-            .map(|(&p, &m)| TernarySignal {
+            .map(|(&p, &m)| Signal {
                 polarity: p,
                 magnitude: m,
             })
@@ -311,15 +311,15 @@ mod tests {
     fn test_weight_content_roundtrip() {
         let buffer = ColdBuffer {
             weights: vec![
-                TernarySignal {
+                Signal {
                     polarity: 1,
                     magnitude: 128,
                 },
-                TernarySignal {
+                Signal {
                     polarity: -1,
                     magnitude: 64,
                 },
-                TernarySignal {
+                Signal {
                     polarity: 0,
                     magnitude: 0,
                 },

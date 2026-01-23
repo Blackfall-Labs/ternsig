@@ -1,13 +1,13 @@
 # ternsig
 
-TernarySignal foundation for CPU-only neural networks.
+Signal foundation for CPU-only neural networks.
 
 ## The Equation
 
 ```
-w = s * m
+s = p * m
 
-s in {-1, 0, +1}    polarity
+p in {-1, 0, +1}    polarity
 m in {0..255}       magnitude
 ```
 
@@ -15,10 +15,10 @@ Two bytes per weight. Integer arithmetic only. No floats. No GPU.
 
 ## What This Changes
 
-Traditional neural networks use 32-bit floats (4 bytes per weight). Ternsig uses TernarySignal (2 bytes per weight):
+Traditional neural networks use 32-bit floats (4 bytes per weight). Ternsig uses Signal (2 bytes per weight):
 
-| Property | Float | TernarySignal |
-|----------|-------|---------------|
+| Property | Float | Signal |
+|----------|-------|--------|
 | Size | 4 bytes | 2 bytes |
 | Arithmetic | FP multiply-add | Integer multiply-add |
 | Hardware | GPU preferred | CPU native |
@@ -26,20 +26,20 @@ Traditional neural networks use 32-bit floats (4 bytes per weight). Ternsig uses
 
 ## Core Components
 
-### TernarySignal
+### Signal
 
 ```rust
-pub struct TernarySignal {
+pub struct Signal {
     pub polarity: i8,    // -1, 0, or +1
     pub magnitude: u8,   // 0-255
 }
 ```
 
-Effective weight = `polarity * magnitude`. Range: -255 to +255.
+Effective value = `polarity * magnitude`. Range: -255 to +255.
 
-### TensorISA
+### Signal ISA (TensorISA)
 
-Hot-reloadable neural network definitions as `.tisa.asm` files:
+Hot-reloadable neural network definitions as `.ternsig` files:
 
 ```asm
 .registers
@@ -92,19 +92,31 @@ Persistent weight storage with temperature lifecycle:
 
 ```toml
 [dependencies]
-ternsig = "0.2"
+ternsig = "0.5"
 ```
 
 ```rust
-use ternsig::{TernarySignal, assemble, TensorInterpreter};
+use ternsig::{Signal, assemble, TensorInterpreter};
 
 // Load chip definition
-let program = assemble(include_str!("classifier.tisa.asm"))?;
+let program = assemble(include_str!("classifier.ternsig"))?;
 let mut interpreter = TensorInterpreter::from_program(&program);
 
 // Forward pass
-let input: Vec<TernarySignal> = /* your input */;
+let input: Vec<Signal> = /* your input */;
 let output = interpreter.forward(&input)?;
+```
+
+## Migration from 0.4.x
+
+`TernarySignal` has been renamed to `Signal`. A deprecated type alias is provided for backwards compatibility:
+
+```rust
+// Old (still works but deprecated)
+use ternsig::TernarySignal;
+
+// New (preferred)
+use ternsig::Signal;
 ```
 
 ## License
