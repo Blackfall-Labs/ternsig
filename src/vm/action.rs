@@ -1,4 +1,4 @@
-//! TensorAction - Opcode definitions for TensorISA
+//! Action - Opcode definitions for Ternsig VM
 //!
 //! Opcodes organized by category in 256-opcode ranges:
 //!
@@ -15,11 +15,11 @@
 
 use std::fmt;
 
-/// Tensor operation opcode (2 bytes)
+/// Operation opcode (2 bytes)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TensorAction(pub u16);
+pub struct Action(pub u16);
 
-impl TensorAction {
+impl Action {
     // =========================================================================
     // System Operations (0x00xx)
     // =========================================================================
@@ -473,13 +473,13 @@ impl TensorAction {
     }
 }
 
-impl fmt::Display for TensorAction {
+impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl Default for TensorAction {
+impl Default for Action {
     fn default() -> Self {
         Self::NOP
     }
@@ -491,43 +491,43 @@ mod tests {
 
     #[test]
     fn test_opcode_categories() {
-        assert!(TensorAction::NOP.is_system());
-        assert!(TensorAction::HALT.is_system());
+        assert!(Action::NOP.is_system());
+        assert!(Action::HALT.is_system());
 
-        assert!(TensorAction::LOAD_WEIGHTS.is_register());
-        assert!(TensorAction::STORE_OUTPUT.is_register());
+        assert!(Action::LOAD_WEIGHTS.is_register());
+        assert!(Action::STORE_OUTPUT.is_register());
 
-        assert!(TensorAction::DEFINE_LAYER.is_architecture());
+        assert!(Action::DEFINE_LAYER.is_architecture());
 
-        assert!(TensorAction::MATMUL.is_forward());
-        assert!(TensorAction::RELU.is_forward());
+        assert!(Action::MATMUL.is_forward());
+        assert!(Action::RELU.is_forward());
 
-        assert!(TensorAction::TERNARY_MATMUL.is_ternary());
-        assert!(TensorAction::QUANTIZE.is_ternary());
+        assert!(Action::TERNARY_MATMUL.is_ternary());
+        assert!(Action::QUANTIZE.is_ternary());
 
-        assert!(TensorAction::MARK_ELIGIBILITY.is_learning());
-        assert!(TensorAction::UPDATE_WEIGHTS.is_learning());
+        assert!(Action::MARK_ELIGIBILITY.is_learning());
+        assert!(Action::UPDATE_WEIGHTS.is_learning());
 
-        assert!(TensorAction::LOOP.is_control_flow());
-        assert!(TensorAction::RETURN.is_control_flow());
+        assert!(Action::LOOP.is_control_flow());
+        assert!(Action::RETURN.is_control_flow());
 
-        assert!(TensorAction::TRACE.is_debug());
+        assert!(Action::TRACE.is_debug());
     }
 
     #[test]
     fn test_pc_modifying() {
-        assert!(TensorAction::LOOP.modifies_pc());
-        assert!(TensorAction::JUMP.modifies_pc());
-        assert!(TensorAction::CALL.modifies_pc());
+        assert!(Action::LOOP.modifies_pc());
+        assert!(Action::JUMP.modifies_pc());
+        assert!(Action::CALL.modifies_pc());
 
-        assert!(!TensorAction::MATMUL.modifies_pc());
-        assert!(!TensorAction::ADD.modifies_pc());
+        assert!(!Action::MATMUL.modifies_pc());
+        assert!(!Action::ADD.modifies_pc());
     }
 
     #[test]
     fn test_names() {
-        assert_eq!(TensorAction::TERNARY_MATMUL.name(), "TERNARY_MATMUL");
-        assert_eq!(TensorAction::RELU.name(), "RELU");
-        assert_eq!(TensorAction::MARK_ELIGIBILITY.name(), "MARK_ELIGIBILITY");
+        assert_eq!(Action::TERNARY_MATMUL.name(), "TERNARY_MATMUL");
+        assert_eq!(Action::RELU.name(), "RELU");
+        assert_eq!(Action::MARK_ELIGIBILITY.name(), "MARK_ELIGIBILITY");
     }
 }

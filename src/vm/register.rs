@@ -1,4 +1,4 @@
-//! TensorRegister - Typed register file for TensorISA
+//! Register - Typed register file for Ternsig VM
 //!
 //! ## Register Banks
 //!
@@ -85,9 +85,9 @@ impl fmt::Display for RegisterBank {
 
 /// A typed tensor register reference
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TensorRegister(pub u8);
+pub struct Register(pub u8);
 
-impl TensorRegister {
+impl Register {
     /// Create a hot register (H0-HF)
     pub const fn hot(index: u8) -> Self {
         debug_assert!(index < 16, "Register index must be 0-15");
@@ -185,7 +185,7 @@ impl TensorRegister {
     }
 }
 
-impl fmt::Display for TensorRegister {
+impl fmt::Display for Register {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_null() {
             write!(f, "_")
@@ -195,7 +195,7 @@ impl fmt::Display for TensorRegister {
     }
 }
 
-impl Default for TensorRegister {
+impl Default for Register {
     fn default() -> Self {
         Self::NULL
     }
@@ -204,7 +204,7 @@ impl Default for TensorRegister {
 /// Data type for tensor registers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub enum TensorDtype {
+pub enum Dtype {
     /// 32-bit float (standard)
     F32 = 0,
     /// 32-bit signed integer (quantized activations)
@@ -223,7 +223,7 @@ pub enum TensorDtype {
     I64 = 7,
 }
 
-impl TensorDtype {
+impl Dtype {
     /// Size in bytes per element
     pub const fn element_size(&self) -> usize {
         match self {
@@ -281,13 +281,13 @@ impl TensorDtype {
     }
 }
 
-impl fmt::Display for TensorDtype {
+impl fmt::Display for Dtype {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name())
     }
 }
 
-impl Default for TensorDtype {
+impl Default for Dtype {
     fn default() -> Self {
         Self::F32
     }
@@ -297,11 +297,11 @@ impl Default for TensorDtype {
 #[derive(Debug, Clone)]
 pub struct RegisterMeta {
     /// Register ID
-    pub id: TensorRegister,
+    pub id: Register,
     /// Dimensions [batch, ..., features]
     pub shape: Vec<usize>,
     /// Data type
-    pub dtype: TensorDtype,
+    pub dtype: Dtype,
     /// Whether register is currently allocated
     pub allocated: bool,
     /// Thermogram key for cold registers (for persistence)
@@ -312,11 +312,11 @@ pub struct RegisterMeta {
 
 impl RegisterMeta {
     /// Create new unallocated register metadata
-    pub fn new(id: TensorRegister) -> Self {
+    pub fn new(id: Register) -> Self {
         Self {
             id,
             shape: Vec::new(),
-            dtype: TensorDtype::default(),
+            dtype: Dtype::default(),
             allocated: false,
             thermogram_key: None,
             frozen: false,
@@ -324,7 +324,7 @@ impl RegisterMeta {
     }
 
     /// Create with shape and dtype
-    pub fn with_shape(id: TensorRegister, shape: Vec<usize>, dtype: TensorDtype) -> Self {
+    pub fn with_shape(id: Register, shape: Vec<usize>, dtype: Dtype) -> Self {
         Self {
             id,
             shape,
@@ -392,17 +392,17 @@ mod tests {
 
     #[test]
     fn test_register_banks() {
-        let h0 = TensorRegister::hot(0);
+        let h0 = Register::hot(0);
         assert_eq!(h0.bank(), RegisterBank::Hot);
         assert_eq!(h0.index(), 0);
         assert!(h0.is_hot());
 
-        let c5 = TensorRegister::cold(5);
+        let c5 = Register::cold(5);
         assert_eq!(c5.bank(), RegisterBank::Cold);
         assert_eq!(c5.index(), 5);
         assert!(c5.is_cold());
 
-        let p15 = TensorRegister::param(15);
+        let p15 = Register::param(15);
         assert_eq!(p15.bank(), RegisterBank::Param);
         assert_eq!(p15.index(), 15);
         assert!(p15.is_param());
@@ -410,36 +410,36 @@ mod tests {
 
     #[test]
     fn test_register_display() {
-        assert_eq!(TensorRegister::hot(0).to_string(), "H0");
-        assert_eq!(TensorRegister::cold(10).to_string(), "C10");
-        assert_eq!(TensorRegister::param(3).to_string(), "P3");
-        assert_eq!(TensorRegister::NULL.to_string(), "_");
+        assert_eq!(Register::hot(0).to_string(), "H0");
+        assert_eq!(Register::cold(10).to_string(), "C10");
+        assert_eq!(Register::param(3).to_string(), "P3");
+        assert_eq!(Register::NULL.to_string(), "_");
     }
 
     #[test]
     fn test_register_parse() {
-        assert_eq!(TensorRegister::parse("H0"), Some(TensorRegister::hot(0)));
-        assert_eq!(TensorRegister::parse("c5"), Some(TensorRegister::cold(5)));
-        assert_eq!(TensorRegister::parse("P15"), Some(TensorRegister::param(15)));
-        assert_eq!(TensorRegister::parse("S0"), Some(TensorRegister::shape(0)));
-        assert_eq!(TensorRegister::parse("X0"), None);
-        assert_eq!(TensorRegister::parse("H16"), None); // Out of range
+        assert_eq!(Register::parse("H0"), Some(Register::hot(0)));
+        assert_eq!(Register::parse("c5"), Some(Register::cold(5)));
+        assert_eq!(Register::parse("P15"), Some(Register::param(15)));
+        assert_eq!(Register::parse("S0"), Some(Register::shape(0)));
+        assert_eq!(Register::parse("X0"), None);
+        assert_eq!(Register::parse("H16"), None); // Out of range
     }
 
     #[test]
     fn test_dtype() {
-        assert_eq!(TensorDtype::F32.element_size(), 4);
-        assert_eq!(TensorDtype::I32.element_size(), 4);
-        assert_eq!(TensorDtype::Ternary.element_size(), 2);
-        assert_eq!(TensorDtype::PackedTernary.element_size(), 1);
+        assert_eq!(Dtype::F32.element_size(), 4);
+        assert_eq!(Dtype::I32.element_size(), 4);
+        assert_eq!(Dtype::Ternary.element_size(), 2);
+        assert_eq!(Dtype::PackedTernary.element_size(), 1);
     }
 
     #[test]
     fn test_register_meta() {
         let meta = RegisterMeta::with_shape(
-            TensorRegister::cold(0),
+            Register::cold(0),
             vec![32, 12],
-            TensorDtype::Ternary,
+            Dtype::Ternary,
         )
         .with_thermogram_key("chip.audio.w1");
 

@@ -1,4 +1,4 @@
-//! Runtime Architecture Modification for TensorISA
+//! Runtime Architecture Modification for Ternsig VM
 //!
 //! Enables self-modification: grow/prune layers, fork specialists at runtime.
 //! This is the core enabler for genuine machine autonomy at the architectural level.
@@ -16,8 +16,8 @@
 //!
 //! ```text
 //! 1. Brain encounters unknown pattern (novelty signal high)
-//! 2. Learning ISA: IF_NOVELTY_HIGH → CALL grow_detector
-//! 3. TensorISA: ALLOC new registers, WIRE to existing mesh
+//! 2. Learning: IF_NOVELTY_HIGH → CALL grow_detector
+//! 3. Ternsig VM: ALLOC new registers, WIRE to existing mesh
 //! 4. Adaptive Learning: Train new detector
 //! 5. Thermogram: Track in HOT state during learning
 //! 6. Success: CONSOLIDATE → move to COLD
@@ -25,8 +25,8 @@
 //! ```
 
 use super::{
-    ColdBuffer, HotBuffer, StepResult, TensorAction, TensorDtype, TensorInstruction,
-    TensorInterpreter, TensorRegister,
+    ColdBuffer, HotBuffer, StepResult, Action, Dtype, Instruction,
+    Interpreter, Register,
 };
 use crate::Signal;
 
@@ -36,7 +36,7 @@ pub struct ShapeSpec {
     /// Dimensions
     pub dims: Vec<usize>,
     /// Data type
-    pub dtype: TensorDtype,
+    pub dtype: Dtype,
     /// Optional thermogram key for persistence
     pub thermogram_key: Option<String>,
 }
@@ -46,7 +46,7 @@ impl ShapeSpec {
     pub fn hot(dims: Vec<usize>) -> Self {
         Self {
             dims,
-            dtype: TensorDtype::I32,
+            dtype: Dtype::I32,
             thermogram_key: None,
         }
     }
@@ -55,7 +55,7 @@ impl ShapeSpec {
     pub fn cold(dims: Vec<usize>) -> Self {
         Self {
             dims,
-            dtype: TensorDtype::Ternary,
+            dtype: Dtype::Ternary,
             thermogram_key: None,
         }
     }
@@ -76,11 +76,11 @@ impl ShapeSpec {
 #[derive(Debug, Clone)]
 pub struct WireSpec {
     /// Output register
-    pub output: TensorRegister,
+    pub output: Register,
     /// Weight register (cold)
-    pub weights: TensorRegister,
+    pub weights: Register,
     /// Input register
-    pub input: TensorRegister,
+    pub input: Register,
     /// Wire type
     pub wire_type: WireType,
 }
@@ -103,22 +103,22 @@ pub enum WireType {
 pub enum ModEvent {
     /// Register allocated
     Allocated {
-        register: TensorRegister,
+        register: Register,
         shape: Vec<usize>,
     },
     /// Register freed
-    Freed { register: TensorRegister },
+    Freed { register: Register },
     /// Connection wired
     Wired { spec: WireSpec },
     /// Connection removed
     Unwired {
-        output: TensorRegister,
-        input: TensorRegister,
+        output: Register,
+        input: Register,
     },
 }
 
-/// Runtime modification extensions for TensorInterpreter
-impl TensorInterpreter {
+/// Runtime modification extensions for Interpreter
+impl Interpreter {
     /// Allocate a new hot register at runtime
     ///
     /// Returns the register index if successful.
@@ -399,7 +399,7 @@ impl ArchStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tensor_isa::assemble;
+    use crate::vm::assemble;
 
     #[test]
     fn test_alloc_and_free() {
@@ -412,7 +412,7 @@ mod tests {
 "#;
 
         let program = assemble(source).unwrap();
-        let mut interp = TensorInterpreter::from_program(&program);
+        let mut interp = Interpreter::from_program(&program);
 
         // Allocate new hot register
         let idx = interp.alloc_hot(vec![8]);
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_alloc_cold_with_key() {
-        let mut interp = TensorInterpreter::new();
+        let mut interp = Interpreter::new();
 
         let idx = interp.alloc_cold(vec![4, 2], Some("test.weights".to_string()));
         assert!(idx.is_some());
@@ -455,7 +455,7 @@ mod tests {
 "#;
 
         let program = assemble(source).unwrap();
-        let mut interp = TensorInterpreter::from_program(&program);
+        let mut interp = Interpreter::from_program(&program);
 
         // Set up input
         if let Some(h0) = interp.hot_reg_mut(0) {
@@ -495,7 +495,7 @@ mod tests {
 "#;
 
         let program = assemble(source).unwrap();
-        let interp = TensorInterpreter::from_program(&program);
+        let interp = Interpreter::from_program(&program);
 
         let stats = interp.arch_stats();
         assert_eq!(stats.hot_count, 3);

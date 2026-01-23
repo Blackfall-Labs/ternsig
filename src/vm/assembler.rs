@@ -1,4 +1,4 @@
-//! TensorISA Assembler - Parses human-readable .tisa.asm to binary .tisa
+//! Assembler - Parses human-readable .ternsig assembly to binary
 //!
 //! ## Assembly Syntax
 //!
@@ -21,12 +21,12 @@
 //! ```
 
 use super::{
-    RegisterMeta, TensorAction, TensorDtype, TensorInstruction, TensorModifier, TensorRegister,
-    TENSOR_INSTRUCTION_SIZE, TISA_MAGIC, TISA_VERSION,
+    RegisterMeta, Action, Dtype, Instruction, Modifier, Register,
+    INSTRUCTION_SIZE, TERNSIG_MAGIC, TERNSIG_VERSION,
 };
 use std::collections::HashMap;
 
-/// Assembled TensorISA program
+/// Assembled Ternsig program
 #[derive(Debug, Clone)]
 pub struct AssembledProgram {
     /// Program name
@@ -34,7 +34,7 @@ pub struct AssembledProgram {
     /// Register definitions
     pub registers: Vec<RegisterMeta>,
     /// Compiled instructions
-    pub instructions: Vec<TensorInstruction>,
+    pub instructions: Vec<Instruction>,
     /// Labels to instruction indices
     pub labels: HashMap<String, usize>,
     /// Input shape
@@ -44,13 +44,13 @@ pub struct AssembledProgram {
 }
 
 impl AssembledProgram {
-    /// Convert to binary .tisa format
+    /// Convert to binary .ternsig format
     pub fn to_binary(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
         // === HEADER (32 bytes) ===
-        bytes.extend_from_slice(&TISA_MAGIC);
-        bytes.extend_from_slice(&TISA_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&TERNSIG_MAGIC);
+        bytes.extend_from_slice(&TERNSIG_VERSION.to_le_bytes());
         bytes.extend_from_slice(&0u16.to_le_bytes()); // flags
 
         // Register counts by bank
@@ -95,21 +95,21 @@ impl AssembledProgram {
     }
 }
 
-/// Assembler for TensorISA
-pub struct TensorAssembler {
+/// Assembler for Ternsig VM
+pub struct Assembler {
     /// Current line number (for error reporting)
     line_number: usize,
     /// Accumulated registers
     registers: Vec<RegisterMeta>,
     /// Accumulated instructions
-    instructions: Vec<TensorInstruction>,
+    instructions: Vec<Instruction>,
     /// Labels to instruction indices
     labels: HashMap<String, usize>,
     /// Unresolved label references (instruction index, label name)
     unresolved_labels: Vec<(usize, String)>,
 }
 
-impl TensorAssembler {
+impl Assembler {
     pub fn new() -> Self {
         Self {
             line_number: 0,
@@ -209,7 +209,7 @@ impl TensorAssembler {
         let rest = line[colon_pos + 1..].trim();
 
         // Parse register ID
-        let reg = TensorRegister::parse(reg_name)
+        let reg = Register::parse(reg_name)
             .ok_or_else(|| self.error(format!("Invalid register: {}", reg_name)))?;
 
         // Parse type and shape: ternary[32, 12] or i32[12]
@@ -223,7 +223,7 @@ impl TensorAssembler {
         let dtype_str = rest[..bracket_start].trim();
         let shape_str = &rest[bracket_start + 1..bracket_end];
 
-        let dtype = TensorDtype::parse(dtype_str)
+        let dtype = Dtype::parse(dtype_str)
             .ok_or_else(|| self.error(format!("Unknown dtype: {}", dtype_str)))?;
 
         // Parse shape dimensions
@@ -294,26 +294,26 @@ impl TensorAssembler {
         &mut self,
         mnemonic: &str,
         ops: &[&str],
-    ) -> Result<TensorInstruction, AssemblerError> {
+    ) -> Result<Instruction, AssemblerError> {
         match mnemonic {
             // System
-            "nop" => Ok(TensorInstruction::nop()),
-            "halt" => Ok(TensorInstruction::halt()),
+            "nop" => Ok(Instruction::nop()),
+            "halt" => Ok(Instruction::halt()),
 
             // Register management
             "load_input" => {
                 let target = self.parse_register_operand(ops.get(0))?;
-                Ok(TensorInstruction::load_input(target))
+                Ok(Instruction::load_input(target))
             }
             "store_output" => {
                 let source = self.parse_register_operand(ops.get(0))?;
-                Ok(TensorInstruction::store_output(source))
+                Ok(Instruction::store_output(source))
             }
             "copy_reg" | "copy" | "mov" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::COPY_REG,
+                Ok(Instruction::new(
+                    Action::COPY_REG,
                     target,
                     source,
                     0,
@@ -322,10 +322,10 @@ impl TensorAssembler {
             }
             "zero_reg" | "zero" => {
                 let target = self.parse_register_operand(ops.get(0))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::ZERO_REG,
+                Ok(Instruction::new(
+                    Action::ZERO_REG,
                     target,
-                    TensorRegister::NULL,
+                    Register::NULL,
                     0,
                     [0, 0, 0],
                 ))
@@ -336,20 +336,20 @@ impl TensorAssembler {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let weights = self.parse_register_operand(ops.get(1))?;
                 let input = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::ternary_matmul(target, weights, input))
+                Ok(Instruction::ternary_matmul(target, weights, input))
             }
             "add" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::add(target, source, other))
+                Ok(Instruction::add(target, source, other))
             }
             "sub" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::SUB,
+                Ok(Instruction::new(
+                    Action::SUB,
                     target,
                     source,
                     other.0,
@@ -360,8 +360,8 @@ impl TensorAssembler {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::MUL,
+                Ok(Instruction::new(
+                    Action::MUL,
                     target,
                     source,
                     other.0,
@@ -371,15 +371,15 @@ impl TensorAssembler {
             "relu" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(TensorInstruction::relu(target, source))
+                Ok(Instruction::relu(target, source))
             }
             "sigmoid" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 // Parse optional gain=X.X parameter
                 let gain = self.parse_gain_param(ops.get(2)).unwrap_or(64); // 4.0 * 16 = 64
-                Ok(TensorInstruction::new(
-                    TensorAction::SIGMOID,
+                Ok(Instruction::new(
+                    Action::SIGMOID,
                     target,
                     source,
                     0,
@@ -390,14 +390,14 @@ impl TensorAssembler {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let amount = self.parse_immediate(ops.get(2))?;
-                Ok(TensorInstruction::shift(target, source, amount as u8))
+                Ok(Instruction::shift(target, source, amount as u8))
             }
             "cmp_gt" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::CMP_GT,
+                Ok(Instruction::new(
+                    Action::CMP_GT,
                     target,
                     source,
                     other.0,
@@ -407,8 +407,8 @@ impl TensorAssembler {
             "max_reduce" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::MAX_REDUCE,
+                Ok(Instruction::new(
+                    Action::MAX_REDUCE,
                     target,
                     source,
                     0,
@@ -420,20 +420,20 @@ impl TensorAssembler {
             "add_babble" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let layer = self.parse_layer_param(ops.get(1))?;
-                Ok(TensorInstruction::add_babble(target, layer))
+                Ok(Instruction::add_babble(target, layer))
             }
             "mark_elig" | "mark_eligibility" => {
                 let output = self.parse_register_operand(ops.get(0))?;
                 let input = self.parse_register_operand(ops.get(1))?;
                 let layer = self.parse_layer_param(ops.get(2))?;
-                Ok(TensorInstruction::mark_eligibility(output, input, layer))
+                Ok(Instruction::mark_eligibility(output, input, layer))
             }
             "load_target" => {
                 let target = self.parse_register_operand(ops.get(0))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::LOAD_TARGET,
+                Ok(Instruction::new(
+                    Action::LOAD_TARGET,
                     target,
-                    TensorRegister::NULL,
+                    Register::NULL,
                     0,
                     [0, 0, 0],
                 ))
@@ -445,8 +445,8 @@ impl TensorAssembler {
                 let direction = self.parse_register_operand(ops.get(2))?;
                 let scale = self.parse_param_or_default(ops.get(3), "scale", 15)?;
                 let threshold_div = self.parse_param_or_default(ops.get(4), "threshold_div", 4)?;
-                Ok(TensorInstruction::new(
-                    TensorAction::MASTERY_UPDATE,
+                Ok(Instruction::new(
+                    Action::MASTERY_UPDATE,
                     weights,
                     activity,
                     direction.0,
@@ -458,10 +458,10 @@ impl TensorAssembler {
                 let weights = self.parse_register_operand(ops.get(0))?;
                 let threshold = self.parse_param_or_default(ops.get(1), "threshold", 50)?;
                 let step = self.parse_param_or_default(ops.get(2), "step", 5)?;
-                Ok(TensorInstruction::new(
-                    TensorAction::MASTERY_COMMIT,
+                Ok(Instruction::new(
+                    Action::MASTERY_COMMIT,
                     weights,
-                    TensorRegister::NULL,
+                    Register::NULL,
                     0,
                     [threshold, step, 0],
                 ))
@@ -476,14 +476,14 @@ impl TensorAssembler {
                     target
                 };
                 let scale = self.parse_scale_param(ops.last())?;
-                Ok(TensorInstruction::dequantize(target, source, scale))
+                Ok(Instruction::dequantize(target, source, scale))
             }
             "ternary_add_bias" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let bias = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::new(
-                    TensorAction::TERNARY_ADD_BIAS,
+                Ok(Instruction::new(
+                    Action::TERNARY_ADD_BIAS,
                     target,
                     source,
                     bias.0,
@@ -495,7 +495,7 @@ impl TensorAssembler {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let table = self.parse_register_operand(ops.get(1))?;
                 let indices = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::embed_lookup(target, table, indices))
+                Ok(Instruction::embed_lookup(target, table, indices))
             }
             "reduce_avg" => {
                 // reduce_avg target, source, start, count
@@ -503,7 +503,7 @@ impl TensorAssembler {
                 let source = self.parse_register_operand(ops.get(1))?;
                 let start = self.parse_immediate(ops.get(2))? as u8;
                 let count = self.parse_immediate(ops.get(3))? as u8;
-                Ok(TensorInstruction::reduce_avg(target, source, start, count))
+                Ok(Instruction::reduce_avg(target, source, start, count))
             }
             "slice" | "narrow" => {
                 // slice target, source, start, len
@@ -511,34 +511,34 @@ impl TensorAssembler {
                 let source = self.parse_register_operand(ops.get(1))?;
                 let start = self.parse_immediate(ops.get(2))? as u8;
                 let len = self.parse_immediate(ops.get(3))? as u8;
-                Ok(TensorInstruction::slice(target, source, start, len))
+                Ok(Instruction::slice(target, source, start, len))
             }
             "argmax" => {
                 // argmax target, source
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(TensorInstruction::argmax(target, source))
+                Ok(Instruction::argmax(target, source))
             }
             "concat" | "cat" => {
                 // concat target, source, other
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(TensorInstruction::concat(target, source, other))
+                Ok(Instruction::concat(target, source, other))
             }
             "squeeze" => {
                 // squeeze target, source, dim
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let dim = self.parse_immediate(ops.get(2)).unwrap_or(0) as u8;
-                Ok(TensorInstruction::squeeze(target, source, dim))
+                Ok(Instruction::squeeze(target, source, dim))
             }
             "unsqueeze" => {
                 // unsqueeze target, source, dim
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let dim = self.parse_immediate(ops.get(2)).unwrap_or(0) as u8;
-                Ok(TensorInstruction::unsqueeze(target, source, dim))
+                Ok(Instruction::unsqueeze(target, source, dim))
             }
             "transpose" => {
                 // transpose target, source, dim1, dim2
@@ -546,7 +546,7 @@ impl TensorAssembler {
                 let source = self.parse_register_operand(ops.get(1))?;
                 let dim1 = self.parse_immediate(ops.get(2)).unwrap_or(0) as u8;
                 let dim2 = self.parse_immediate(ops.get(3)).unwrap_or(1) as u8;
-                Ok(TensorInstruction::transpose(target, source, dim1, dim2))
+                Ok(Instruction::transpose(target, source, dim1, dim2))
             }
             "gate_update" => {
                 // gate_update target, gate, update, state
@@ -554,16 +554,16 @@ impl TensorAssembler {
                 let gate = self.parse_register_operand(ops.get(1))?;
                 let update = self.parse_register_operand(ops.get(2))?;
                 let state = self.parse_register_operand(ops.get(3))?;
-                Ok(TensorInstruction::gate_update(target, gate, update, state))
+                Ok(Instruction::gate_update(target, gate, update, state))
             }
 
             // Control flow
             "loop" => {
                 let count = self.parse_immediate(ops.get(0))? as u16;
-                Ok(TensorInstruction::loop_n(count))
+                Ok(Instruction::loop_n(count))
             }
-            "end_loop" => Ok(TensorInstruction::end_loop()),
-            "break" => Ok(TensorInstruction::break_loop()),
+            "end_loop" => Ok(Instruction::end_loop()),
+            "break" => Ok(Instruction::break_loop()),
 
             _ => Err(self.error(format!("Unknown mnemonic: {}", mnemonic))),
         }
@@ -573,9 +573,9 @@ impl TensorAssembler {
     fn parse_register_operand(
         &self,
         op: Option<&&str>,
-    ) -> Result<TensorRegister, AssemblerError> {
+    ) -> Result<Register, AssemblerError> {
         let s = op.ok_or_else(|| self.error("Missing register operand".to_string()))?;
-        TensorRegister::parse(s).ok_or_else(|| self.error(format!("Invalid register: {}", s)))
+        Register::parse(s).ok_or_else(|| self.error(format!("Invalid register: {}", s)))
     }
 
     /// Parse an immediate value
@@ -669,7 +669,7 @@ impl TensorAssembler {
     /// Infer input shape from load_input instruction's target register
     fn infer_input_shape(&self) -> Vec<usize> {
         for instr in &self.instructions {
-            if instr.action == TensorAction::LOAD_INPUT {
+            if instr.action == Action::LOAD_INPUT {
                 // Find the target register's shape
                 if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.target) {
                     return reg_meta.shape.clone();
@@ -682,7 +682,7 @@ impl TensorAssembler {
     /// Infer output shape from store_output instruction's source register
     fn infer_output_shape(&self) -> Vec<usize> {
         for instr in &self.instructions {
-            if instr.action == TensorAction::STORE_OUTPUT {
+            if instr.action == Action::STORE_OUTPUT {
                 // Find the source register's shape
                 if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.source) {
                     return reg_meta.shape.clone();
@@ -718,7 +718,7 @@ impl TensorAssembler {
     }
 }
 
-impl Default for TensorAssembler {
+impl Default for Assembler {
     fn default() -> Self {
         Self::new()
     }
@@ -741,7 +741,7 @@ impl std::error::Error for AssemblerError {}
 
 /// Convenience function to assemble source
 pub fn assemble(source: &str) -> Result<AssembledProgram, AssemblerError> {
-    TensorAssembler::new().assemble(source)
+    Assembler::new().assemble(source)
 }
 
 #[cfg(test)]
@@ -771,13 +771,13 @@ mod tests {
         assert_eq!(program.instructions.len(), 5);
 
         // Check first instruction
-        assert_eq!(program.instructions[0].action, TensorAction::LOAD_INPUT);
+        assert_eq!(program.instructions[0].action, Action::LOAD_INPUT);
 
         // Check ternary_matmul
-        assert_eq!(program.instructions[1].action, TensorAction::TERNARY_MATMUL);
+        assert_eq!(program.instructions[1].action, Action::TERNARY_MATMUL);
 
         // Check halt
-        assert_eq!(program.instructions[4].action, TensorAction::HALT);
+        assert_eq!(program.instructions[4].action, Action::HALT);
     }
 
     #[test]
@@ -801,14 +801,14 @@ mod tests {
         let c0 = &program.registers[0];
         assert!(c0.id.is_cold());
         assert_eq!(c0.shape, vec![32, 12]);
-        assert_eq!(c0.dtype, TensorDtype::Ternary);
+        assert_eq!(c0.dtype, Dtype::Ternary);
         assert_eq!(c0.thermogram_key, Some("chip.audio.w1".to_string()));
 
         // Check hot register
         let h0 = &program.registers[2];
         assert!(h0.id.is_hot());
         assert_eq!(h0.shape, vec![12]);
-        assert_eq!(h0.dtype, TensorDtype::I32);
+        assert_eq!(h0.dtype, Dtype::I32);
     }
 
     #[test]
@@ -826,10 +826,10 @@ mod tests {
         let binary = program.to_binary();
 
         // Check magic
-        assert_eq!(&binary[0..4], &TISA_MAGIC);
+        assert_eq!(&binary[0..4], &TERNSIG_MAGIC);
 
         // Check version
         let version = u16::from_le_bytes([binary[4], binary[5]]);
-        assert_eq!(version, TISA_VERSION);
+        assert_eq!(version, TERNSIG_VERSION);
     }
 }

@@ -1,7 +1,7 @@
-//! Hot Reload support for TensorISA programs
+//! Hot Reload support for Ternsig programs
 //!
 //! Enables runtime program updates without process restart:
-//! - Watch .tisa.asm files for changes
+//! - Watch .ternsig files for changes
 //! - Reassemble on change
 //! - Swap program while preserving cold register state (weights)
 //!
@@ -26,10 +26,10 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use astromind::cognitive::tensor_isa::{HotReloadManager, TensorInterpreter};
+//! use ternsig::vm::{HotReloadManager, Interpreter};
 //!
-//! let mut interpreter = TensorInterpreter::new();
-//! let manager = HotReloadManager::new("data/ir/audio_classifier.tisa.asm")?;
+//! let mut interpreter = Interpreter::new();
+//! let manager = HotReloadManager::new("audio_classifier.ternsig")?;
 //!
 //! // In main loop
 //! if let Some(new_program) = manager.poll_reload()? {
@@ -37,7 +37,7 @@
 //! }
 //! ```
 
-use super::{assemble, AssembledProgram, ColdBuffer, TensorInterpreter};
+use super::{assemble, AssembledProgram, ColdBuffer, Interpreter};
 use crate::Signal;
 use anyhow::{Context, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -74,7 +74,7 @@ pub enum InterpreterState {
     ReloadPending,
 }
 
-/// Hot reload manager for TensorISA programs
+/// Hot reload manager for Ternsig programs
 pub struct HotReloadManager {
     /// Path being watched
     watch_path: PathBuf,
@@ -132,7 +132,7 @@ impl HotReloadManager {
         })
     }
 
-    /// Create manager watching a directory of .tisa.asm files
+    /// Create manager watching a directory of .ternsig files
     pub fn watch_directory(dir: impl AsRef<Path>) -> Result<Self> {
         let watch_path = dir.as_ref().to_path_buf();
         let (tx, rx) = channel();
@@ -145,7 +145,7 @@ impl HotReloadManager {
                     notify::EventKind::Modify(_) | notify::EventKind::Create(_)
                 ) {
                     for path in event.paths {
-                        if path.extension().map_or(false, |e| e == "asm") {
+                        if path.extension().map_or(false, |e| e == "ternsig") {
                             let _ = tx_clone.send(path);
                         }
                     }
@@ -183,9 +183,9 @@ impl HotReloadManager {
         loop {
             match self.change_rx.try_recv() {
                 Ok(path) => {
-                    // Check if this is the file we're watching (or any .tisa.asm in directory mode)
+                    // Check if this is the file we're watching (or any .ternsig in directory mode)
                     if path == self.watch_path
-                        || path.extension().map_or(false, |e| e == "asm")
+                        || path.extension().map_or(false, |e| e == "ternsig")
                     {
                         self.pending_path = Some(path);
                         self.last_change = Some(Instant::now());
@@ -231,8 +231,8 @@ impl HotReloadManager {
     }
 }
 
-/// Extension trait for TensorInterpreter hot reload support
-impl TensorInterpreter {
+/// Extension trait for Interpreter hot reload support
+impl Interpreter {
     /// Hot reload a new program while preserving cold register state
     ///
     /// This method:
@@ -329,10 +329,10 @@ impl TensorInterpreter {
 
 /// Managed hot-reloadable interpreter
 ///
-/// Combines TensorInterpreter with HotReloadManager for automatic reloading.
+/// Combines Interpreter with HotReloadManager for automatic reloading.
 pub struct ReloadableInterpreter {
     /// The interpreter
-    interpreter: TensorInterpreter,
+    interpreter: Interpreter,
     /// Hot reload manager
     manager: HotReloadManager,
     /// Reload history
@@ -342,7 +342,7 @@ pub struct ReloadableInterpreter {
 }
 
 impl ReloadableInterpreter {
-    /// Create from a .tisa.asm file path
+    /// Create from a .ternsig file path
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
@@ -353,7 +353,7 @@ impl ReloadableInterpreter {
         let program =
             assemble(&source).with_context(|| format!("Failed to assemble {}", path.display()))?;
 
-        let interpreter = TensorInterpreter::from_program(&program);
+        let interpreter = Interpreter::from_program(&program);
         let mut manager = HotReloadManager::new(path)?;
         manager.current_program = Some(program);
 
@@ -392,12 +392,12 @@ impl ReloadableInterpreter {
     }
 
     /// Get the interpreter
-    pub fn interpreter(&self) -> &TensorInterpreter {
+    pub fn interpreter(&self) -> &Interpreter {
         &self.interpreter
     }
 
     /// Get mutable interpreter
-    pub fn interpreter_mut(&mut self) -> &mut TensorInterpreter {
+    pub fn interpreter_mut(&mut self) -> &mut Interpreter {
         &mut self.interpreter
     }
 
@@ -473,7 +473,7 @@ mod tests {
 "#;
 
         let program1 = assemble(source1).unwrap();
-        let mut interp = TensorInterpreter::from_program(&program1);
+        let mut interp = Interpreter::from_program(&program1);
 
         // Set some weights
         use crate::Signal;
@@ -518,7 +518,7 @@ mod tests {
 "#;
 
         let program = assemble(source).unwrap();
-        let mut interp = TensorInterpreter::from_program(&program);
+        let mut interp = Interpreter::from_program(&program);
 
         // Set weights
         use crate::Signal;

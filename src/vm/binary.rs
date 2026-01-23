@@ -1,6 +1,6 @@
-//! Binary serialization for TensorISA programs
+//! Binary serialization for Ternsig programs
 //!
-//! Provides `.tisa` binary format for compiled programs, enabling:
+//! Provides `.ternsig` binary format for compiled programs, enabling:
 //! - Fast loading without parsing
 //! - Cartridge storage
 //! - Hot-reload via binary swap
@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! HEADER (32 bytes)
-//! ├── Magic:      "TISA" (4 bytes)
+//! ├── Magic:      "TERN" (4 bytes)
 //! ├── Version:    u16 (format version)
 //! ├── Flags:      u16 (compression, encryption flags)
 //! ├── RegCounts:  u8 (hot), u8 (cold), u8 (param), u8 (shape)
@@ -35,15 +35,15 @@
 //! ```
 
 use super::{
-    AssembledProgram, RegisterMeta, TensorDtype, TensorInstruction, TensorRegister,
-    TENSOR_INSTRUCTION_SIZE, TISA_MAGIC, TISA_VERSION,
+    AssembledProgram, RegisterMeta, Dtype, Instruction, Register,
+    INSTRUCTION_SIZE, TERNSIG_MAGIC, TERNSIG_VERSION,
 };
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
 /// Header size in bytes
-pub const TISA_HEADER_SIZE: usize = 32;
+pub const HEADER_SIZE: usize = 32;
 
 /// Binary format flags
 #[derive(Clone, Copy, Debug, Default)]
@@ -80,10 +80,10 @@ impl BinaryFlags {
     }
 }
 
-/// Binary header for .tisa files
+/// Binary header for .ternsig files
 #[derive(Clone, Debug)]
-pub struct TisaHeader {
-    /// Magic bytes "TISA"
+pub struct Header {
+    /// Magic bytes "TERN"
     pub magic: [u8; 4],
     /// Format version
     pub version: u16,
@@ -105,7 +105,7 @@ pub struct TisaHeader {
     pub checksum: u64,
 }
 
-impl TisaHeader {
+impl Header {
     /// Create header from assembled program
     pub fn from_program(program: &AssembledProgram, reg_def_size: u32) -> Self {
         let mut hot_count = 0u8;
@@ -123,8 +123,8 @@ impl TisaHeader {
         }
 
         Self {
-            magic: TISA_MAGIC,
-            version: TISA_VERSION,
+            magic: TERNSIG_MAGIC,
+            version: TERNSIG_VERSION,
             flags: BinaryFlags::default(),
             hot_count,
             cold_count,
@@ -138,7 +138,7 @@ impl TisaHeader {
 
     /// Write header to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; TISA_HEADER_SIZE];
+        let mut buf = vec![0u8; HEADER_SIZE];
 
         // Magic (4 bytes)
         buf[0..4].copy_from_slice(&self.magic);
@@ -172,14 +172,14 @@ impl TisaHeader {
 
     /// Read header from bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < TISA_HEADER_SIZE {
+        if data.len() < HEADER_SIZE {
             anyhow::bail!("Header too short: {} bytes", data.len());
         }
 
         let magic: [u8; 4] = data[0..4].try_into()?;
-        if magic != TISA_MAGIC {
+        if magic != TERNSIG_MAGIC {
             anyhow::bail!(
-                "Invalid magic: expected TISA, got {:?}",
+                "Invalid magic: expected TERN, got {:?}",
                 std::str::from_utf8(&magic)
             );
         }
@@ -218,14 +218,14 @@ fn serialize_register(reg: &RegisterMeta) -> Vec<u8> {
 
     // Dtype (1 byte)
     buf.push(match reg.dtype {
-        TensorDtype::F32 => 0,
-        TensorDtype::I32 => 1,
-        TensorDtype::Ternary => 2,
-        TensorDtype::PackedTernary => 3,
-        TensorDtype::F16 => 4,
-        TensorDtype::I16 => 5,
-        TensorDtype::I8 => 6,
-        TensorDtype::I64 => 7,
+        Dtype::F32 => 0,
+        Dtype::I32 => 1,
+        Dtype::Ternary => 2,
+        Dtype::PackedTernary => 3,
+        Dtype::F16 => 4,
+        Dtype::I16 => 5,
+        Dtype::I8 => 6,
+        Dtype::I64 => 7,
     });
 
     // Flags (1 byte): allocated, frozen
@@ -259,19 +259,19 @@ fn deserialize_register(data: &[u8], offset: &mut usize) -> Result<RegisterMeta>
     }
 
     // Register ID
-    let id = TensorRegister(data[*offset]);
+    let id = Register(data[*offset]);
     *offset += 1;
 
     // Dtype
     let dtype = match data.get(*offset) {
-        Some(0) => TensorDtype::F32,
-        Some(1) => TensorDtype::I32,
-        Some(2) => TensorDtype::Ternary,
-        Some(3) => TensorDtype::PackedTernary,
-        Some(4) => TensorDtype::F16,
-        Some(5) => TensorDtype::I16,
-        Some(6) => TensorDtype::I8,
-        Some(7) => TensorDtype::I64,
+        Some(0) => Dtype::F32,
+        Some(1) => Dtype::I32,
+        Some(2) => Dtype::Ternary,
+        Some(3) => Dtype::PackedTernary,
+        Some(4) => Dtype::F16,
+        Some(5) => Dtype::I16,
+        Some(6) => Dtype::I8,
+        Some(7) => Dtype::I64,
         _ => anyhow::bail!("Invalid dtype at offset {}", *offset),
     };
     *offset += 1;
@@ -331,10 +331,10 @@ pub fn serialize(program: &AssembledProgram) -> Result<Vec<u8>> {
     }
 
     // Create header
-    let mut header = TisaHeader::from_program(program, reg_defs.len() as u32);
+    let mut header = Header::from_program(program, reg_defs.len() as u32);
 
     // Serialize instructions
-    let mut instrs = Vec::with_capacity(program.instructions.len() * TENSOR_INSTRUCTION_SIZE);
+    let mut instrs = Vec::with_capacity(program.instructions.len() * INSTRUCTION_SIZE);
     for instr in &program.instructions {
         instrs.extend_from_slice(&instr.to_bytes());
     }
@@ -357,12 +357,12 @@ pub fn serialize(program: &AssembledProgram) -> Result<Vec<u8>> {
 /// Deserialize a binary to assembled program
 pub fn deserialize(data: &[u8]) -> Result<AssembledProgram> {
     // Parse header
-    let header = TisaHeader::from_bytes(data)?;
+    let header = Header::from_bytes(data)?;
 
     // Verify checksum
-    let content_start = TISA_HEADER_SIZE;
+    let content_start = HEADER_SIZE;
     let content_end = content_start + header.reg_def_size as usize
-        + header.instr_count as usize * TENSOR_INSTRUCTION_SIZE;
+        + header.instr_count as usize * INSTRUCTION_SIZE;
 
     if content_end > data.len() {
         anyhow::bail!(
@@ -400,15 +400,15 @@ pub fn deserialize(data: &[u8]) -> Result<AssembledProgram> {
     let mut instructions = Vec::with_capacity(header.instr_count as usize);
 
     for i in 0..header.instr_count as usize {
-        let start = i * TENSOR_INSTRUCTION_SIZE;
-        let end = start + TENSOR_INSTRUCTION_SIZE;
+        let start = i * INSTRUCTION_SIZE;
+        let end = start + INSTRUCTION_SIZE;
         if end > instr_data.len() {
             anyhow::bail!("Instruction {} out of bounds", i);
         }
         let bytes: [u8; 8] = instr_data[start..end]
             .try_into()
             .context("Failed to convert instruction bytes")?;
-        instructions.push(TensorInstruction::from_bytes(&bytes));
+        instructions.push(Instruction::from_bytes(&bytes));
     }
 
     Ok(AssembledProgram {
@@ -455,7 +455,7 @@ pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<AssembledProg
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tensor_isa::assemble;
+    use crate::vm::assemble;
 
     #[test]
     fn test_roundtrip() {

@@ -1,4 +1,4 @@
-//! TensorModifier - 3-byte operation-specific data encoding
+//! Modifier - 3-byte operation-specific data encoding
 //!
 //! The modifier field has different interpretations per operation category:
 //!
@@ -98,11 +98,11 @@ impl ModifierFlags {
 
 /// 3-byte modifier with multiple interpretations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct TensorModifier {
+pub struct Modifier {
     pub bytes: [u8; 3],
 }
 
-impl TensorModifier {
+impl Modifier {
     /// Create from raw bytes
     pub const fn from_bytes(bytes: [u8; 3]) -> Self {
         Self { bytes }
@@ -208,7 +208,7 @@ impl TensorModifier {
     }
 }
 
-impl fmt::Display for TensorModifier {
+impl fmt::Display for Modifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -224,13 +224,13 @@ mod tests {
 
     #[test]
     fn test_shape_encoding() {
-        let m = TensorModifier::from_shape(32, 12);
+        let m = Modifier::from_shape(32, 12);
         let (input, output) = m.to_shape();
         assert_eq!(input, 32);
         assert_eq!(output, 12);
 
         // Test max values
-        let m_max = TensorModifier::from_shape(4095, 4095);
+        let m_max = Modifier::from_shape(4095, 4095);
         let (i, o) = m_max.to_shape();
         assert_eq!(i, 4095);
         assert_eq!(o, 4095);
@@ -238,14 +238,14 @@ mod tests {
 
     #[test]
     fn test_count_threshold() {
-        let m = TensorModifier::from_count_threshold(100, 128);
+        let m = Modifier::from_count_threshold(100, 128);
         assert_eq!(m.count(), 100);
         assert!((m.threshold() - 0.5).abs() < 0.01);
     }
 
     #[test]
     fn test_scale_flags() {
-        let m = TensorModifier::from_scale_flags(32768, ModifierFlags::default().with_clamp());
+        let m = Modifier::from_scale_flags(32768, ModifierFlags::default().with_clamp());
         assert_eq!(m.scale_u16(), 32768);
         assert!((m.scale_f32() - 0.5).abs() < 0.0001);
         assert!(m.flags().clamp());
@@ -253,10 +253,10 @@ mod tests {
 
     #[test]
     fn test_value_encoding() {
-        let m = TensorModifier::absolute(0.9);
+        let m = Modifier::absolute(0.9);
         assert!((m.value_f32() - 0.9).abs() < 0.01);
 
-        let m_rel = TensorModifier::relative(1.5);
+        let m_rel = Modifier::relative(1.5);
         assert!((m_rel.value_f32() - 1.5).abs() < 0.01);
         assert!(m_rel.flags().relative());
     }

@@ -1,16 +1,16 @@
-//! TensorInterpreter - Runtime execution engine for TensorISA
+//! Interpreter - Runtime execution engine for Ternsig VM
 //!
-//! Executes TensorISA programs against a typed register file.
-//! Integrates with Thermograms for weight persistence and Learning ISA for training.
+//! Executes Ternsig programs against a typed register file.
+//! Integrates with Thermograms for weight persistence and Learning for training.
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────┐
-//! │              TensorInterpreter                   │
+//! │                  Interpreter                     │
 //! ├─────────────────────────────────────────────────┤
 //! │  Hot Regs [H0-HF]:  Vec<i32> activations        │
-//! │  Cold Regs [C0-CF]: Vec<Signal> weights  │
+//! │  Cold Regs [C0-CF]: Vec<Signal> weights         │
 //! │  Param Regs [P0-PF]: i32 scalars                │
 //! │  Shape Regs [S0-SF]: Vec<usize> shapes          │
 //! ├─────────────────────────────────────────────────┤
@@ -19,7 +19,7 @@
 //! └─────────────────────────────────────────────────┘
 //! ```
 
-use super::{AssembledProgram, RegisterMeta, TensorAction, TensorDtype, TensorInstruction, TensorRegister};
+use super::{AssembledProgram, RegisterMeta, Action, Dtype, Instruction, Register};
 use std::collections::VecDeque;
 use crate::Signal;
 
@@ -46,9 +46,9 @@ pub enum StepResult {
 #[derive(Debug, Clone)]
 pub enum DomainOp {
     /// Load weights from Thermogram
-    LoadWeights { register: TensorRegister, key: String },
+    LoadWeights { register: Register, key: String },
     /// Store weights to Thermogram
-    StoreWeights { register: TensorRegister, key: String },
+    StoreWeights { register: Register, key: String },
     /// Consolidate hot → cold
     Consolidate,
     /// Compute error signal (i32 scaled by 256)
@@ -155,9 +155,9 @@ impl ColdBuffer {
 }
 
 /// TensorISA Interpreter - NO FLOATS, pure integer/ternary
-pub struct TensorInterpreter {
+pub struct Interpreter {
     /// Program instructions
-    program: Vec<TensorInstruction>,
+    program: Vec<Instruction>,
     /// Program counter
     pc: usize,
     /// Hot registers (activations)
@@ -188,7 +188,7 @@ pub struct TensorInterpreter {
     current_error: i32,
 }
 
-impl TensorInterpreter {
+impl Interpreter {
     /// Create a new interpreter with empty program
     pub fn new() -> Self {
         Self {
@@ -369,18 +369,18 @@ impl TensorInterpreter {
     }
 
     /// Execute a single instruction
-    fn execute(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute(&mut self, instr: Instruction) -> StepResult {
         match instr.action {
             // === System ===
-            TensorAction::NOP => StepResult::Continue,
-            TensorAction::HALT => StepResult::Halt,
-            TensorAction::RESET => {
+            Action::NOP => StepResult::Continue,
+            Action::HALT => StepResult::Halt,
+            Action::RESET => {
                 self.reset();
                 StepResult::Continue
             }
 
             // === Register Management ===
-            TensorAction::LOAD_INPUT => {
+            Action::LOAD_INPUT => {
                 let idx = instr.target.index();
                 if let Some(buf) = &mut self.hot_regs[idx] {
                     let len = buf.data.len().min(self.input_buffer.len());
@@ -388,14 +388,14 @@ impl TensorInterpreter {
                 }
                 StepResult::Continue
             }
-            TensorAction::STORE_OUTPUT => {
+            Action::STORE_OUTPUT => {
                 let idx = instr.source.index();
                 if let Some(buf) = &self.hot_regs[idx] {
                     self.output_buffer = buf.data.clone();
                 }
                 StepResult::Continue
             }
-            TensorAction::ZERO_REG => {
+            Action::ZERO_REG => {
                 let idx = instr.target.index();
                 if instr.target.is_hot() {
                     if let Some(buf) = &mut self.hot_regs[idx] {
@@ -404,7 +404,7 @@ impl TensorInterpreter {
                 }
                 StepResult::Continue
             }
-            TensorAction::COPY_REG => {
+            Action::COPY_REG => {
                 let src_idx = instr.source.index();
                 let dst_idx = instr.target.index();
                 if instr.source.is_hot() && instr.target.is_hot() {
@@ -416,53 +416,53 @@ impl TensorInterpreter {
             }
 
             // === Forward Ops ===
-            TensorAction::TERNARY_MATMUL => self.execute_ternary_matmul(instr),
-            TensorAction::ADD => self.execute_add(instr),
-            TensorAction::SUB => self.execute_sub(instr),
-            TensorAction::MUL => self.execute_mul(instr),
-            TensorAction::RELU => self.execute_relu(instr),
-            TensorAction::SIGMOID => self.execute_sigmoid(instr),
-            TensorAction::SHIFT => self.execute_shift(instr),
-            TensorAction::CMP_GT => self.execute_cmp_gt(instr),
-            TensorAction::MAX_REDUCE => self.execute_max_reduce(instr),
+            Action::TERNARY_MATMUL => self.execute_ternary_matmul(instr),
+            Action::ADD => self.execute_add(instr),
+            Action::SUB => self.execute_sub(instr),
+            Action::MUL => self.execute_mul(instr),
+            Action::RELU => self.execute_relu(instr),
+            Action::SIGMOID => self.execute_sigmoid(instr),
+            Action::SHIFT => self.execute_shift(instr),
+            Action::CMP_GT => self.execute_cmp_gt(instr),
+            Action::MAX_REDUCE => self.execute_max_reduce(instr),
 
             // === Ternary Ops ===
-            TensorAction::DEQUANTIZE => self.execute_dequantize(instr),
-            TensorAction::TERNARY_ADD_BIAS => self.execute_ternary_add_bias(instr),
-            TensorAction::EMBED_LOOKUP => self.execute_embed_lookup(instr),
-            TensorAction::REDUCE_AVG => self.execute_reduce_avg(instr),
-            TensorAction::SLICE => self.execute_slice(instr),
-            TensorAction::ARGMAX => self.execute_argmax(instr),
-            TensorAction::CONCAT => self.execute_concat(instr),
-            TensorAction::SQUEEZE => self.execute_squeeze(instr),
-            TensorAction::UNSQUEEZE => self.execute_unsqueeze(instr),
-            TensorAction::TRANSPOSE => self.execute_transpose(instr),
-            TensorAction::GATE_UPDATE => self.execute_gate_update(instr),
+            Action::DEQUANTIZE => self.execute_dequantize(instr),
+            Action::TERNARY_ADD_BIAS => self.execute_ternary_add_bias(instr),
+            Action::EMBED_LOOKUP => self.execute_embed_lookup(instr),
+            Action::REDUCE_AVG => self.execute_reduce_avg(instr),
+            Action::SLICE => self.execute_slice(instr),
+            Action::ARGMAX => self.execute_argmax(instr),
+            Action::CONCAT => self.execute_concat(instr),
+            Action::SQUEEZE => self.execute_squeeze(instr),
+            Action::UNSQUEEZE => self.execute_unsqueeze(instr),
+            Action::TRANSPOSE => self.execute_transpose(instr),
+            Action::GATE_UPDATE => self.execute_gate_update(instr),
 
             // === Learning Ops ===
-            TensorAction::ADD_BABBLE => self.execute_add_babble(instr),
-            TensorAction::MARK_ELIGIBILITY => {
+            Action::ADD_BABBLE => self.execute_add_babble(instr),
+            Action::MARK_ELIGIBILITY => {
                 // Mark eligibility is a no-op in inference mode
                 StepResult::Continue
             }
-            TensorAction::LOAD_TARGET => self.execute_load_target(instr),
-            TensorAction::MASTERY_UPDATE => self.execute_mastery_update(instr),
-            TensorAction::MASTERY_COMMIT => self.execute_mastery_commit(instr),
+            Action::LOAD_TARGET => self.execute_load_target(instr),
+            Action::MASTERY_UPDATE => self.execute_mastery_update(instr),
+            Action::MASTERY_COMMIT => self.execute_mastery_commit(instr),
 
             // === Control Flow ===
-            TensorAction::LOOP => self.execute_loop(instr),
-            TensorAction::END_LOOP => self.execute_end_loop(),
-            TensorAction::BREAK => self.execute_break(),
-            TensorAction::JUMP => {
+            Action::LOOP => self.execute_loop(instr),
+            Action::END_LOOP => self.execute_end_loop(),
+            Action::BREAK => self.execute_break(),
+            Action::JUMP => {
                 self.pc = instr.count() as usize;
                 StepResult::Continue
             }
-            TensorAction::CALL => {
+            Action::CALL => {
                 self.call_stack.push(self.pc + 1);
                 self.pc = instr.count() as usize;
                 StepResult::Continue
             }
-            TensorAction::RETURN => {
+            Action::RETURN => {
                 if let Some(ret_pc) = self.call_stack.pop() {
                     self.pc = ret_pc;
                     StepResult::Continue
@@ -477,7 +477,7 @@ impl TensorInterpreter {
 
     // === Operation Implementations ===
 
-    fn execute_ternary_matmul(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_ternary_matmul(&mut self, instr: Instruction) -> StepResult {
         let weights_idx = instr.source.index();
         let input_idx = instr.aux as usize & 0x0F;
         let output_idx = instr.target.index();
@@ -526,13 +526,13 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_add(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_add(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let other_idx = instr.aux as usize & 0x0F;
         let dst_idx = instr.target.index();
 
         // Handle bias addition (cold + hot)
-        if instr.source.is_hot() && TensorRegister(instr.aux).is_cold() {
+        if instr.source.is_hot() && Register(instr.aux).is_cold() {
             // Hot + Cold bias
             let src = match &self.hot_regs[src_idx] {
                 Some(buf) => buf.clone(),
@@ -557,7 +557,7 @@ impl TensorInterpreter {
                 data: result,
                 shape: src.shape.clone(),
             });
-        } else if instr.source.is_hot() && TensorRegister(instr.aux).is_hot() {
+        } else if instr.source.is_hot() && Register(instr.aux).is_hot() {
             // Hot + Hot
             let src = match &self.hot_regs[src_idx] {
                 Some(buf) => buf.clone(),
@@ -585,7 +585,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_relu(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_relu(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();
 
@@ -604,7 +604,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_shift(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_shift(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();
         let shift_amount = instr.aux as u32;
@@ -624,7 +624,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_sub(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_sub(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let other_idx = instr.aux as usize & 0x0F;
         let dst_idx = instr.target.index();
@@ -654,7 +654,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_mul(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_mul(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let other_idx = instr.aux as usize & 0x0F;
         let dst_idx = instr.target.index();
@@ -685,7 +685,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_sigmoid(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_sigmoid(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();
         // Gain from modifier (default 64 = 4.0 * 16)
@@ -721,7 +721,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_cmp_gt(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_cmp_gt(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let other_idx = instr.aux as usize & 0x0F;
         let dst_idx = instr.target.index();
@@ -751,7 +751,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_max_reduce(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_max_reduce(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();
 
@@ -770,7 +770,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_ternary_add_bias(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_ternary_add_bias(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let bias_idx = instr.aux as usize & 0x0F;
         let dst_idx = instr.target.index();
@@ -803,7 +803,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_embed_lookup(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_embed_lookup(&mut self, instr: Instruction) -> StepResult {
         // EMBED_LOOKUP: target[i] = table[indices[i]]
         // target = output hot register
         // source = embedding table (cold, 2D: num_embeddings x embedding_dim)
@@ -862,7 +862,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_reduce_avg(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_reduce_avg(&mut self, instr: Instruction) -> StepResult {
         // REDUCE_AVG: target[0] = mean(source[start..start+count])
         // target = output hot register (single element)
         // source = input hot register
@@ -910,7 +910,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_slice(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_slice(&mut self, instr: Instruction) -> StepResult {
         // SLICE: target = source[start..start+len]
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();
@@ -936,7 +936,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_argmax(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_argmax(&mut self, instr: Instruction) -> StepResult {
         // ARGMAX: target[0] = index of max value in source
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();
@@ -964,7 +964,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_concat(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_concat(&mut self, instr: Instruction) -> StepResult {
         // CONCAT: target = concat(source, other)
         let src_idx = instr.source.index();
         let other_idx = instr.aux as usize & 0x0F;
@@ -992,7 +992,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_squeeze(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_squeeze(&mut self, instr: Instruction) -> StepResult {
         // SQUEEZE: For 1D signals, this is effectively a copy
         // In higher-dimensional contexts, removes dim of size 1
         let src_idx = instr.source.index();
@@ -1005,7 +1005,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_unsqueeze(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_unsqueeze(&mut self, instr: Instruction) -> StepResult {
         // UNSQUEEZE: For 1D signals, this is effectively a copy
         // In higher-dimensional contexts, adds dim of size 1
         let src_idx = instr.source.index();
@@ -1018,7 +1018,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_transpose(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_transpose(&mut self, instr: Instruction) -> StepResult {
         // TRANSPOSE: For 1D signals, this is effectively a copy
         // In higher-dimensional contexts, swaps dimensions
         let src_idx = instr.source.index();
@@ -1031,7 +1031,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_gate_update(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_gate_update(&mut self, instr: Instruction) -> StepResult {
         // GATE_UPDATE: target = gate * update + (1 - gate) * state
         // Fused operation for GRU-style gated updates
         // source = gate register (hot)
@@ -1079,7 +1079,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_load_target(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_load_target(&mut self, instr: Instruction) -> StepResult {
         let idx = instr.target.index();
 
         // Load target into a hot register (already i32)
@@ -1093,7 +1093,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_mastery_update(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_mastery_update(&mut self, instr: Instruction) -> StepResult {
         // MASTERY_UPDATE: pressure[i] += direction * activity[i] * scale
         // target = weight register (cold)
         // source = activity register (hot)
@@ -1147,7 +1147,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_mastery_commit(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_mastery_commit(&mut self, instr: Instruction) -> StepResult {
         // MASTERY_COMMIT: if |pressure| > threshold, update weights
         // target = weight register (cold)
         // modifier[0] = pressure threshold (default 50)
@@ -1203,7 +1203,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_dequantize(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_dequantize(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let shift = instr.scale() as u32;
 
@@ -1219,7 +1219,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_add_babble(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_add_babble(&mut self, instr: Instruction) -> StepResult {
         let idx = instr.target.index();
 
         if let Some(buf) = &mut self.hot_regs[idx] {
@@ -1243,7 +1243,7 @@ impl TensorInterpreter {
         StepResult::Continue
     }
 
-    fn execute_loop(&mut self, instr: TensorInstruction) -> StepResult {
+    fn execute_loop(&mut self, instr: Instruction) -> StepResult {
         let count = instr.count();
         if count > 0 {
             self.loop_stack.push(LoopState {
@@ -1343,7 +1343,7 @@ impl TensorInterpreter {
     }
 }
 
-impl Default for TensorInterpreter {
+impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
     }
@@ -1352,11 +1352,11 @@ impl Default for TensorInterpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tensor_isa::assemble;
+    use crate::vm::assemble;
 
     #[test]
     fn test_interpreter_creation() {
-        let interp = TensorInterpreter::new();
+        let interp = Interpreter::new();
         assert_eq!(interp.pc(), 0);
         assert!(interp.is_ended());
     }
@@ -1374,7 +1374,7 @@ mod tests {
 "#;
 
         let program = assemble(source).unwrap();
-        let mut interp = TensorInterpreter::from_program(&program);
+        let mut interp = Interpreter::from_program(&program);
 
         // Input as Signal
         let input = vec![
@@ -1408,7 +1408,7 @@ mod tests {
 "#;
 
         let program = assemble(source).unwrap();
-        let mut interp = TensorInterpreter::from_program(&program);
+        let mut interp = Interpreter::from_program(&program);
 
         // Input as Signal
         let input = vec![
@@ -1439,7 +1439,7 @@ mod tests {
 "#;
 
         let program = assemble(source).unwrap();
-        let mut interp = TensorInterpreter::from_program(&program);
+        let mut interp = Interpreter::from_program(&program);
 
         let input = vec![100, -50, 200, 0];
         let output = interp.forward_i32(&input).unwrap();

@@ -1,4 +1,4 @@
-//! Thermogram Bridge for TensorISA
+//! Thermogram Bridge for Ternsig VM
 //!
 //! Provides persistence for cold registers (Signal weights) via Thermogram.
 //! Weights are stored with thermal state tracking (hot/warm/cold/frozen) and
@@ -10,7 +10,7 @@
 //! - Weights stored as Signal (polarity + magnitude)
 //! - Temperature lifecycle: HOT → WARM → COOL → COLD
 
-use crate::tensor_isa::{ColdBuffer, TensorInterpreter};
+use crate::vm::{ColdBuffer, Interpreter};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use crate::Signal;
@@ -203,7 +203,7 @@ impl TensorThermogram {
     }
 
     /// Load all cold registers for an interpreter
-    pub fn load_interpreter_weights(&self, interpreter: &mut TensorInterpreter) -> Result<usize> {
+    pub fn load_interpreter_weights(&self, interpreter: &mut Interpreter) -> Result<usize> {
         let mut loaded = 0;
 
         for i in 0..16 {
@@ -236,7 +236,7 @@ impl TensorThermogram {
     /// Store all cold registers from an interpreter
     pub fn store_interpreter_weights(
         &mut self,
-        interpreter: &TensorInterpreter,
+        interpreter: &Interpreter,
         strength: f32,
     ) -> Result<usize> {
         let mut stored = 0;

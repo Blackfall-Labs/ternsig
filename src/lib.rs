@@ -6,7 +6,7 @@
 //! ## Core Components
 //!
 //! - **Signal**: The fundamental unit (s = p × m, polarity ∈ {-1,0,+1}, magnitude ∈ 0-255)
-//! - **Signal ISA**: Hot-reloadable neural network instruction set (.ternsig files)
+//! - **Ternsig VM**: Hot-reloadable neural network programs (.ternsig files)
 //! - **Adaptive Learning**: Mastery learning - 23ms updates, 90% accuracy threshold
 //! - **Thermogram Integration**: Persistent signal storage with temperature lifecycle
 //!
@@ -26,16 +26,16 @@
 //! ## Example
 //!
 //! ```ignore
-//! use ternsig::{Signal, TensorInterpreter, assemble};
+//! use ternsig::{Signal, Interpreter, assemble};
 //!
 //! // Load chip definition
 //! let program = assemble(include_str!("onset.ternsig"))?;
-//! let mut interpreter = TensorInterpreter::new(&program)?;
+//! let mut vm = Interpreter::new(&program)?;
 //!
-//! // Forward pass with ternary signals
-//! interpreter.set_input(&input_signals);
-//! interpreter.execute()?;
-//! let output = interpreter.get_output();
+//! // Forward pass with signals
+//! vm.set_input(&input_signals);
+//! vm.execute()?;
+//! let output = vm.get_output();
 //! ```
 
 // Signal - The fundamental unit (owned by ternsig)
@@ -43,21 +43,27 @@ mod ternary;
 #[allow(deprecated)]
 pub use ternary::{Signal, TernarySignal, Polarity};
 
-// TensorISA - Hot-reloadable neural network definitions
-pub mod tensor_isa;
-pub use tensor_isa::{
+// Ternsig VM - Hot-reloadable neural network programs
+pub mod vm;
+pub use vm::{
     // Core types
-    TensorInterpreter, TensorInstruction, TensorAction,
-    TensorRegister, HotBuffer, ColdBuffer, TensorDtype, TensorModifier,
+    Interpreter, Instruction, Action,
+    Register, HotBuffer, ColdBuffer, Dtype, Modifier,
     // Assembly
     assemble, AssembledProgram, AssemblerError,
     // Binary format
-    serialize_tisa, deserialize_tisa, load_tisa_file, save_tisa_file,
+    serialize, deserialize, load_from_file, save_to_file,
     // Hot reload
     HotReloadManager, ReloadableInterpreter,
     // Runtime modification
     ArchStats, ModEvent, ShapeSpec, WireSpec, WireType,
 };
+
+// Legacy re-exports for backwards compatibility (deprecated)
+#[deprecated(note = "Use vm module directly")]
+pub mod tensor_isa {
+    pub use crate::vm::*;
+}
 
 // Mastery learning - pure integer adaptive learning
 pub mod learning;

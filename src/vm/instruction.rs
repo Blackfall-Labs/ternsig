@@ -1,4 +1,4 @@
-//! TensorInstruction - 8-byte instruction format for TensorISA
+//! Instruction - 8-byte instruction format for Ternsig VM
 //!
 //! ## Format
 //!
@@ -28,33 +28,33 @@
 //!   MODIFIER = [0, 0, 0]
 //! ```
 
-use super::{TensorAction, TensorModifier, TensorRegister};
+use super::{Action, Modifier, Register};
 use std::fmt;
 
 /// A TensorISA instruction (8 bytes)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TensorInstruction {
+pub struct Instruction {
     /// Operation opcode
-    pub action: TensorAction,
+    pub action: Action,
     /// Destination register
-    pub target: TensorRegister,
+    pub target: Register,
     /// Source register
-    pub source: TensorRegister,
+    pub source: Register,
     /// Auxiliary register or immediate value
     pub aux: u8,
     /// Operation-specific modifier (3 bytes)
     pub modifier: [u8; 3],
 }
 
-impl TensorInstruction {
+impl Instruction {
     /// Instruction size in bytes
     pub const SIZE: usize = 8;
 
     /// Create a new instruction
     pub const fn new(
-        action: TensorAction,
-        target: TensorRegister,
-        source: TensorRegister,
+        action: Action,
+        target: Register,
+        source: Register,
         aux: u8,
         modifier: [u8; 3],
     ) -> Self {
@@ -69,16 +69,16 @@ impl TensorInstruction {
 
     /// Create a simple instruction with default modifier
     pub const fn simple(
-        action: TensorAction,
-        target: TensorRegister,
-        source: TensorRegister,
+        action: Action,
+        target: Register,
+        source: Register,
     ) -> Self {
         Self::new(action, target, source, 0, [0, 0, 0])
     }
 
     /// Create a system instruction (no registers)
-    pub const fn system(action: TensorAction) -> Self {
-        Self::new(action, TensorRegister::NULL, TensorRegister::NULL, 0, [0, 0, 0])
+    pub const fn system(action: Action) -> Self {
+        Self::new(action, Register::NULL, Register::NULL, 0, [0, 0, 0])
     }
 
     // =========================================================================
@@ -87,64 +87,64 @@ impl TensorInstruction {
 
     /// NOP instruction
     pub const fn nop() -> Self {
-        Self::system(TensorAction::NOP)
+        Self::system(Action::NOP)
     }
 
     /// HALT instruction
     pub const fn halt() -> Self {
-        Self::system(TensorAction::HALT)
+        Self::system(Action::HALT)
     }
 
     /// Load from input buffer: target = input_buffer
-    pub const fn load_input(target: TensorRegister) -> Self {
-        Self::simple(TensorAction::LOAD_INPUT, target, TensorRegister::NULL)
+    pub const fn load_input(target: Register) -> Self {
+        Self::simple(Action::LOAD_INPUT, target, Register::NULL)
     }
 
     /// Store to output buffer: output_buffer = source
-    pub const fn store_output(source: TensorRegister) -> Self {
-        Self::simple(TensorAction::STORE_OUTPUT, TensorRegister::NULL, source)
+    pub const fn store_output(source: Register) -> Self {
+        Self::simple(Action::STORE_OUTPUT, Register::NULL, source)
     }
 
     /// Ternary matrix multiply: target = weights @ input
     pub const fn ternary_matmul(
-        target: TensorRegister,
-        weights: TensorRegister,
-        input: TensorRegister,
+        target: Register,
+        weights: Register,
+        input: Register,
     ) -> Self {
-        Self::new(TensorAction::TERNARY_MATMUL, target, weights, input.0, [0, 0, 0])
+        Self::new(Action::TERNARY_MATMUL, target, weights, input.0, [0, 0, 0])
     }
 
     /// Add: target = source + aux_reg
     pub const fn add(
-        target: TensorRegister,
-        source: TensorRegister,
-        other: TensorRegister,
+        target: Register,
+        source: Register,
+        other: Register,
     ) -> Self {
-        Self::new(TensorAction::ADD, target, source, other.0, [0, 0, 0])
+        Self::new(Action::ADD, target, source, other.0, [0, 0, 0])
     }
 
     /// ReLU: target = max(0, source)
-    pub const fn relu(target: TensorRegister, source: TensorRegister) -> Self {
-        Self::simple(TensorAction::RELU, target, source)
+    pub const fn relu(target: Register, source: Register) -> Self {
+        Self::simple(Action::RELU, target, source)
     }
 
     /// Shift right: target = source >> shift_amount
-    pub const fn shift(target: TensorRegister, source: TensorRegister, shift_amount: u8) -> Self {
-        Self::new(TensorAction::SHIFT, target, source, shift_amount, [0, 0, 0])
+    pub const fn shift(target: Register, source: Register, shift_amount: u8) -> Self {
+        Self::new(Action::SHIFT, target, source, shift_amount, [0, 0, 0])
     }
 
     /// Add babble noise
-    pub fn add_babble(target: TensorRegister, layer_index: u8) -> Self {
-        Self::new(TensorAction::ADD_BABBLE, target, TensorRegister::NULL, layer_index, [0, 0, 0])
+    pub fn add_babble(target: Register, layer_index: u8) -> Self {
+        Self::new(Action::ADD_BABBLE, target, Register::NULL, layer_index, [0, 0, 0])
     }
 
     /// Mark eligibility: mark weights based on input/output activity
     pub const fn mark_eligibility(
-        output: TensorRegister,
-        input: TensorRegister,
+        output: Register,
+        input: Register,
         layer_index: u8,
     ) -> Self {
-        Self::new(TensorAction::MARK_ELIGIBILITY, output, input, layer_index, [0, 0, 0])
+        Self::new(Action::MARK_ELIGIBILITY, output, input, layer_index, [0, 0, 0])
     }
 
     /// Embedding lookup: target[i] = table[indices[i]]
@@ -152,87 +152,87 @@ impl TensorInstruction {
     /// indices is a hot register with integer indices
     /// output is a hot register receiving looked-up embeddings
     pub const fn embed_lookup(
-        target: TensorRegister,
-        table: TensorRegister,
-        indices: TensorRegister,
+        target: Register,
+        table: Register,
+        indices: Register,
     ) -> Self {
-        Self::new(TensorAction::EMBED_LOOKUP, target, table, indices.0, [0, 0, 0])
+        Self::new(Action::EMBED_LOOKUP, target, table, indices.0, [0, 0, 0])
     }
 
     /// Reduce average: target[0] = mean(source[start..start+count])
     /// Useful for band pooling in audio, spatial pooling, etc.
     pub const fn reduce_avg(
-        target: TensorRegister,
-        source: TensorRegister,
+        target: Register,
+        source: Register,
         start: u8,
         count: u8,
     ) -> Self {
-        Self::new(TensorAction::REDUCE_AVG, target, source, start, [count, 0, 0])
+        Self::new(Action::REDUCE_AVG, target, source, start, [count, 0, 0])
     }
 
     /// Slice: target = source[start..start+len]
     pub const fn slice(
-        target: TensorRegister,
-        source: TensorRegister,
+        target: Register,
+        source: Register,
         start: u8,
         len: u8,
     ) -> Self {
-        Self::new(TensorAction::SLICE, target, source, start, [len, 0, 0])
+        Self::new(Action::SLICE, target, source, start, [len, 0, 0])
     }
 
     /// Argmax: target[0] = index of max value in source
-    pub const fn argmax(target: TensorRegister, source: TensorRegister) -> Self {
-        Self::simple(TensorAction::ARGMAX, target, source)
+    pub const fn argmax(target: Register, source: Register) -> Self {
+        Self::simple(Action::ARGMAX, target, source)
     }
 
     /// Concat: target = concat(source, other)
     pub const fn concat(
-        target: TensorRegister,
-        source: TensorRegister,
-        other: TensorRegister,
+        target: Register,
+        source: Register,
+        other: Register,
     ) -> Self {
-        Self::new(TensorAction::CONCAT, target, source, other.0, [0, 0, 0])
+        Self::new(Action::CONCAT, target, source, other.0, [0, 0, 0])
     }
 
     /// Squeeze: target = source with dimension removed
     /// For 1D Signal vectors, this is effectively a copy
-    pub const fn squeeze(target: TensorRegister, source: TensorRegister, dim: u8) -> Self {
-        Self::new(TensorAction::SQUEEZE, target, source, dim, [0, 0, 0])
+    pub const fn squeeze(target: Register, source: Register, dim: u8) -> Self {
+        Self::new(Action::SQUEEZE, target, source, dim, [0, 0, 0])
     }
 
     /// Unsqueeze: target = source with dimension added
     /// For 1D Signal vectors, this is effectively a copy
-    pub const fn unsqueeze(target: TensorRegister, source: TensorRegister, dim: u8) -> Self {
-        Self::new(TensorAction::UNSQUEEZE, target, source, dim, [0, 0, 0])
+    pub const fn unsqueeze(target: Register, source: Register, dim: u8) -> Self {
+        Self::new(Action::UNSQUEEZE, target, source, dim, [0, 0, 0])
     }
 
     /// Transpose: target = source with dims swapped
     /// For 1D Signal vectors, this is effectively a copy
     pub const fn transpose(
-        target: TensorRegister,
-        source: TensorRegister,
+        target: Register,
+        source: Register,
         dim1: u8,
         dim2: u8,
     ) -> Self {
-        Self::new(TensorAction::TRANSPOSE, target, source, dim1, [dim2, 0, 0])
+        Self::new(Action::TRANSPOSE, target, source, dim1, [dim2, 0, 0])
     }
 
     /// Gate update: target = gate * update + (1 - gate) * state
     /// Fused operation for gated recurrent updates (GRU-style)
     pub const fn gate_update(
-        target: TensorRegister,
-        gate: TensorRegister,
-        update: TensorRegister,
-        state: TensorRegister,
+        target: Register,
+        gate: Register,
+        update: Register,
+        state: Register,
     ) -> Self {
-        Self::new(TensorAction::GATE_UPDATE, target, gate, update.0, [state.0, 0, 0])
+        Self::new(Action::GATE_UPDATE, target, gate, update.0, [state.0, 0, 0])
     }
 
     /// Dequantize: target = float(source) / scale
-    pub fn dequantize(target: TensorRegister, source: TensorRegister, scale: u16) -> Self {
+    pub fn dequantize(target: Register, source: Register, scale: u16) -> Self {
         let scale_bytes = scale.to_be_bytes();
         Self::new(
-            TensorAction::DEQUANTIZE,
+            Action::DEQUANTIZE,
             target,
             source,
             0,
@@ -244,9 +244,9 @@ impl TensorInstruction {
     pub fn loop_n(count: u16) -> Self {
         let count_bytes = count.to_be_bytes();
         Self::new(
-            TensorAction::LOOP,
-            TensorRegister::NULL,
-            TensorRegister::NULL,
+            Action::LOOP,
+            Register::NULL,
+            Register::NULL,
             0,
             [count_bytes[0], count_bytes[1], 0],
         )
@@ -254,12 +254,12 @@ impl TensorInstruction {
 
     /// End of loop
     pub const fn end_loop() -> Self {
-        Self::system(TensorAction::END_LOOP)
+        Self::system(Action::END_LOOP)
     }
 
     /// Break from loop
     pub const fn break_loop() -> Self {
-        Self::system(TensorAction::BREAK)
+        Self::system(Action::BREAK)
     }
 
     // =========================================================================
@@ -269,9 +269,9 @@ impl TensorInstruction {
     /// Parse from 8 bytes (big-endian)
     pub fn from_bytes(bytes: &[u8; 8]) -> Self {
         Self {
-            action: TensorAction::from_u16(u16::from_be_bytes([bytes[0], bytes[1]])),
-            target: TensorRegister(bytes[2]),
-            source: TensorRegister(bytes[3]),
+            action: Action::from_u16(u16::from_be_bytes([bytes[0], bytes[1]])),
+            target: Register(bytes[2]),
+            source: Register(bytes[3]),
             aux: bytes[4],
             modifier: [bytes[5], bytes[6], bytes[7]],
         }
@@ -343,9 +343,9 @@ impl TensorInstruction {
         self.action.is_domain_op()
     }
 
-    /// Get the modifier as a TensorModifier
-    pub fn get_modifier(&self) -> TensorModifier {
-        TensorModifier::from_bytes(self.modifier)
+    /// Get the modifier as a Modifier
+    pub fn get_modifier(&self) -> Modifier {
+        Modifier::from_bytes(self.modifier)
     }
 
     /// Extract shape from modifier (for DEFINE_LAYER)
@@ -368,7 +368,7 @@ impl TensorInstruction {
     }
 }
 
-impl fmt::Display for TensorInstruction {
+impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Format based on operation category
         match self.action.category() {
@@ -388,14 +388,14 @@ impl fmt::Display for TensorInstruction {
             }
             0x30 | 0x40 => {
                 // Forward/Ternary ops
-                if self.action == TensorAction::TERNARY_MATMUL {
+                if self.action == Action::TERNARY_MATMUL {
                     // ternary_matmul always has aux as input register
-                    let aux_reg = TensorRegister(self.aux);
+                    let aux_reg = Register(self.aux);
                     write!(f, "{} {}, {}, {}", self.action, self.target, self.source, aux_reg)
                 } else if self.aux != 0 && self.aux != 0xFF {
-                    let aux_reg = TensorRegister(self.aux);
+                    let aux_reg = Register(self.aux);
                     write!(f, "{} {}, {}, {}", self.action, self.target, self.source, aux_reg)
-                } else if self.action == TensorAction::SHIFT {
+                } else if self.action == Action::SHIFT {
                     write!(f, "{} {}, {}, {}", self.action, self.target, self.source, self.aux)
                 } else {
                     write!(f, "{} {}, {}", self.action, self.target, self.source)
@@ -407,7 +407,7 @@ impl fmt::Display for TensorInstruction {
             }
             0x60 => {
                 // Control flow
-                if self.action == TensorAction::LOOP {
+                if self.action == Action::LOOP {
                     write!(f, "{} {}", self.action, self.count())
                 } else {
                     write!(f, "{}", self.action)
@@ -418,38 +418,38 @@ impl fmt::Display for TensorInstruction {
     }
 }
 
-impl Default for TensorInstruction {
+impl Default for Instruction {
     fn default() -> Self {
         Self::nop()
     }
 }
 
-/// Builder for TensorInstruction
-pub struct TensorInstructionBuilder {
-    action: TensorAction,
-    target: TensorRegister,
-    source: TensorRegister,
+/// Builder for Instruction
+pub struct InstructionBuilder {
+    action: Action,
+    target: Register,
+    source: Register,
     aux: u8,
     modifier: [u8; 3],
 }
 
-impl TensorInstructionBuilder {
-    pub fn new(action: TensorAction) -> Self {
+impl InstructionBuilder {
+    pub fn new(action: Action) -> Self {
         Self {
             action,
-            target: TensorRegister::NULL,
-            source: TensorRegister::NULL,
+            target: Register::NULL,
+            source: Register::NULL,
             aux: 0,
             modifier: [0, 0, 0],
         }
     }
 
-    pub fn target(mut self, reg: TensorRegister) -> Self {
+    pub fn target(mut self, reg: Register) -> Self {
         self.target = reg;
         self
     }
 
-    pub fn source(mut self, reg: TensorRegister) -> Self {
+    pub fn source(mut self, reg: Register) -> Self {
         self.source = reg;
         self
     }
@@ -459,7 +459,7 @@ impl TensorInstructionBuilder {
         self
     }
 
-    pub fn aux_reg(mut self, reg: TensorRegister) -> Self {
+    pub fn aux_reg(mut self, reg: Register) -> Self {
         self.aux = reg.0;
         self
     }
@@ -489,8 +489,8 @@ impl TensorInstructionBuilder {
         self
     }
 
-    pub fn build(self) -> TensorInstruction {
-        TensorInstruction::new(self.action, self.target, self.source, self.aux, self.modifier)
+    pub fn build(self) -> Instruction {
+        Instruction::new(self.action, self.target, self.source, self.aux, self.modifier)
     }
 }
 
@@ -500,31 +500,31 @@ mod tests {
 
     #[test]
     fn test_instruction_roundtrip() {
-        let instr = TensorInstruction::ternary_matmul(
-            TensorRegister::hot(1),
-            TensorRegister::cold(0),
-            TensorRegister::hot(0),
+        let instr = Instruction::ternary_matmul(
+            Register::hot(1),
+            Register::cold(0),
+            Register::hot(0),
         );
 
         let bytes = instr.to_bytes();
         assert_eq!(bytes.len(), 8);
 
-        let parsed = TensorInstruction::from_bytes(&bytes);
+        let parsed = Instruction::from_bytes(&bytes);
         assert_eq!(instr, parsed);
     }
 
     #[test]
     fn test_instruction_builders() {
-        let instr = TensorInstruction::relu(TensorRegister::hot(2), TensorRegister::hot(1));
-        assert_eq!(instr.action, TensorAction::RELU);
-        assert_eq!(instr.target, TensorRegister::hot(2));
-        assert_eq!(instr.source, TensorRegister::hot(1));
+        let instr = Instruction::relu(Register::hot(2), Register::hot(1));
+        assert_eq!(instr.action, Action::RELU);
+        assert_eq!(instr.target, Register::hot(2));
+        assert_eq!(instr.source, Register::hot(1));
     }
 
     #[test]
     fn test_shape_encoding() {
-        let instr = TensorInstructionBuilder::new(TensorAction::DEFINE_LAYER)
-            .target(TensorRegister::cold(0))
+        let instr = InstructionBuilder::new(Action::DEFINE_LAYER)
+            .target(Register::cold(0))
             .shape(32, 12)
             .build();
 
@@ -536,33 +536,33 @@ mod tests {
     #[test]
     fn test_parse_all() {
         let instructions = vec![
-            TensorInstruction::load_input(TensorRegister::hot(0)),
-            TensorInstruction::ternary_matmul(
-                TensorRegister::hot(1),
-                TensorRegister::cold(0),
-                TensorRegister::hot(0),
+            Instruction::load_input(Register::hot(0)),
+            Instruction::ternary_matmul(
+                Register::hot(1),
+                Register::cold(0),
+                Register::hot(0),
             ),
-            TensorInstruction::relu(TensorRegister::hot(2), TensorRegister::hot(1)),
-            TensorInstruction::halt(),
+            Instruction::relu(Register::hot(2), Register::hot(1)),
+            Instruction::halt(),
         ];
 
-        let bytes = TensorInstruction::to_bytes_all(&instructions);
+        let bytes = Instruction::to_bytes_all(&instructions);
         assert_eq!(bytes.len(), 32); // 4 instructions * 8 bytes
 
-        let parsed = TensorInstruction::parse_all(&bytes).unwrap();
+        let parsed = Instruction::parse_all(&bytes).unwrap();
         assert_eq!(parsed.len(), 4);
-        assert_eq!(parsed[0].action, TensorAction::LOAD_INPUT);
-        assert_eq!(parsed[1].action, TensorAction::TERNARY_MATMUL);
-        assert_eq!(parsed[2].action, TensorAction::RELU);
-        assert_eq!(parsed[3].action, TensorAction::HALT);
+        assert_eq!(parsed[0].action, Action::LOAD_INPUT);
+        assert_eq!(parsed[1].action, Action::TERNARY_MATMUL);
+        assert_eq!(parsed[2].action, Action::RELU);
+        assert_eq!(parsed[3].action, Action::HALT);
     }
 
     #[test]
     fn test_display() {
-        let instr = TensorInstruction::ternary_matmul(
-            TensorRegister::hot(1),
-            TensorRegister::cold(0),
-            TensorRegister::hot(0),
+        let instr = Instruction::ternary_matmul(
+            Register::hot(1),
+            Register::cold(0),
+            Register::hot(0),
         );
         let display = format!("{}", instr);
         assert!(display.contains("TERNARY_MATMUL"));
