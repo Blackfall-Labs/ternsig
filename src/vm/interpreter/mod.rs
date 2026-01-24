@@ -109,6 +109,26 @@ impl SignalTemperature {
             _ => Self::Cold,
         }
     }
+
+    /// Promote to colder (more stable) temperature
+    pub fn promote(&self) -> Self {
+        match self {
+            Self::Hot => Self::Warm,
+            Self::Warm => Self::Cool,
+            Self::Cool => Self::Cold,
+            Self::Cold => Self::Cold, // Already coldest
+        }
+    }
+
+    /// Demote to hotter (more plastic) temperature
+    pub fn demote(&self) -> Self {
+        match self {
+            Self::Hot => Self::Hot, // Already hottest
+            Self::Warm => Self::Hot,
+            Self::Cool => Self::Warm,
+            Self::Cold => Self::Cool,
+        }
+    }
 }
 
 /// Cold register (signal buffer with optional per-signal temperature)
