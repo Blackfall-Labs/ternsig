@@ -130,6 +130,52 @@ impl SignalTemperature {
             Self::Cold => Self::Cool,
         }
     }
+
+    // =========================================================================
+    // Flow Gating (Phase 8: Substrate Mechanics)
+    // =========================================================================
+    //
+    // Temperature affects not just LEARNING but FLOW.
+    // Hot connections conduct easily. Cold connections need intensity.
+    // This creates the "flow through heated paths" behavior.
+
+    /// Get conductance factor for signal flow (0-255)
+    ///
+    /// Hot = full conductance (signals flow freely)
+    /// Cold = minimal conductance (signals attenuated)
+    ///
+    /// This is the "how much current can flow" factor.
+    #[inline]
+    pub fn conductance(&self) -> u8 {
+        match self {
+            Self::Hot => 255,   // Full flow
+            Self::Warm => 200,  // Good flow
+            Self::Cool => 100,  // Reduced flow
+            Self::Cold => 30,   // Minimal flow
+        }
+    }
+
+    /// Get intensity threshold to activate this connection
+    ///
+    /// Cold connections need higher input intensity to activate at all.
+    /// This is the "barrier to traverse" - below this, no signal passes.
+    ///
+    /// Think of it as: cold synapses need stronger presynaptic signals.
+    #[inline]
+    pub fn activation_threshold(&self) -> u8 {
+        match self {
+            Self::Hot => 0,     // Always activates (no barrier)
+            Self::Warm => 15,   // Very low barrier
+            Self::Cool => 60,   // Medium barrier
+            Self::Cold => 120,  // High barrier (needs strong input)
+        }
+    }
+
+    /// Check if a signal with given intensity can traverse this connection
+    #[inline]
+    pub fn can_conduct(&self, input_intensity: u8) -> bool {
+        input_intensity >= self.activation_threshold()
+    }
 }
 
 /// Cold register (signal buffer with optional per-signal temperature)
@@ -388,10 +434,10 @@ impl Interpreter {
         Self {
             program: Vec::new(),
             pc: 0,
-            hot_regs: vec![None; 16],
-            cold_regs: vec![None; 16],
-            param_regs: vec![0; 16],
-            shape_regs: vec![Vec::new(); 16],
+            hot_regs: vec![None; 64],
+            cold_regs: vec![None; 64],
+            param_regs: vec![0; 64],
+            shape_regs: vec![Vec::new(); 64],
             call_stack: Vec::new(),
             loop_stack: Vec::new(),
             input_buffer: Vec::new(),
@@ -531,6 +577,7 @@ impl Interpreter {
 
             // Forward ops (ops_forward.rs)
             Action::TERNARY_MATMUL => self.execute_ternary_matmul(instr),
+            Action::TERNARY_BATCH_MATMUL => self.execute_ternary_batch_matmul(instr),
             Action::ADD => self.execute_add(instr),
             Action::SUB => self.execute_sub(instr),
             Action::MUL => self.execute_mul(instr),
@@ -546,6 +593,8 @@ impl Interpreter {
             Action::DEQUANTIZE => self.execute_dequantize(instr),
             Action::TERNARY_ADD_BIAS => self.execute_ternary_add_bias(instr),
             Action::EMBED_LOOKUP => self.execute_embed_lookup(instr),
+            Action::EMBED_SEQUENCE => self.execute_embed_sequence(instr),
+            Action::REDUCE_MEAN_DIM => self.execute_reduce_mean_dim(instr),
             Action::REDUCE_AVG => self.execute_reduce_avg(instr),
             Action::SLICE => self.execute_slice(instr),
             Action::ARGMAX => self.execute_argmax(instr),
@@ -776,5 +825,141 @@ mod tests {
         assert_eq!(output[1], -50);
         assert_eq!(output[2], 200);
         assert_eq!(output[3], 0);
+    }
+
+    // =========================================================================
+    // Temperature-Gated Flow Tests (Phase 8: Substrate Mechanics)
+    // =========================================================================
+
+    #[test]
+    fn test_temperature_gated_conductance() {
+        // Test that temperature affects conductance values correctly
+        assert_eq!(SignalTemperature::Hot.conductance(), 255);
+        assert_eq!(SignalTemperature::Warm.conductance(), 200);
+        assert_eq!(SignalTemperature::Cool.conductance(), 100);
+        assert_eq!(SignalTemperature::Cold.conductance(), 30);
+    }
+
+    #[test]
+    fn test_temperature_activation_threshold() {
+        // Test that cold connections need higher intensity to activate
+        assert_eq!(SignalTemperature::Hot.activation_threshold(), 0);   // No barrier
+        assert_eq!(SignalTemperature::Warm.activation_threshold(), 15);
+        assert_eq!(SignalTemperature::Cool.activation_threshold(), 60);
+        assert_eq!(SignalTemperature::Cold.activation_threshold(), 120); // High barrier
+    }
+
+    #[test]
+    fn test_temperature_can_conduct() {
+        // Hot: always conducts
+        assert!(SignalTemperature::Hot.can_conduct(0));
+        assert!(SignalTemperature::Hot.can_conduct(255));
+
+        // Cold: needs high intensity
+        assert!(!SignalTemperature::Cold.can_conduct(50));   // Below threshold
+        assert!(!SignalTemperature::Cold.can_conduct(119));  // Just below
+        assert!(SignalTemperature::Cold.can_conduct(120));   // At threshold
+        assert!(SignalTemperature::Cold.can_conduct(200));   // Above threshold
+    }
+
+    #[test]
+    fn test_temperature_gated_matmul() {
+        // Test that cold weights reduce signal flow
+        let source = r#"
+.registers
+    C0: ternary[2, 4]  ; 2 outputs, 4 inputs
+    H0: i32[4]
+    H1: i32[2]
+
+.program
+    load_input H0
+    ternary_matmul H1, C0, H0
+    shift H1, H1, 8
+    store_output H1
+    halt
+"#;
+
+        let program = assemble(source).unwrap();
+        let mut interp = Interpreter::from_program(&program);
+
+        // Initialize weights: all positive, magnitude 100
+        if let Some(cold) = interp.cold_reg_mut(0) {
+            for w in cold.weights_mut() {
+                w.polarity = 1;
+                w.magnitude = 100;
+            }
+        }
+
+        // Strong input signal (above cold threshold of 120)
+        let strong_input = vec![
+            Signal::positive(200),
+            Signal::positive(200),
+            Signal::positive(200),
+            Signal::positive(200),
+        ];
+
+        // First: test with all HOT weights (no temperature gating)
+        let output_hot = interp.forward(&strong_input).unwrap();
+        let hot_sum: i32 = output_hot.iter().map(|s| s.magnitude as i32).sum();
+
+        // Now set all weights to COLD temperature
+        if let Some(cold) = interp.cold_reg_mut(0) {
+            cold.set_all_temperatures(SignalTemperature::Cold);
+        }
+
+        let output_cold = interp.forward(&strong_input).unwrap();
+        let cold_sum: i32 = output_cold.iter().map(|s| s.magnitude as i32).sum();
+
+        // With strong input (200 > threshold 120), cold weights should still conduct
+        // but with reduced magnitude due to lower conductance (30 vs 255)
+        assert!(cold_sum > 0, "Cold weights should conduct with strong input");
+        assert!(cold_sum < hot_sum, "Cold weights should have lower output than hot");
+
+        // The ratio should be roughly cold_conductance/hot_conductance = 30/255 ≈ 0.12
+        // But we're not testing exact values, just the behavior
+    }
+
+    #[test]
+    fn test_cold_weights_block_weak_signals() {
+        // Test that cold weights block signals below threshold
+        let source = r#"
+.registers
+    C0: ternary[1, 4]  ; 1 output, 4 inputs
+    H0: i32[4]
+    H1: i32[1]
+
+.program
+    load_input H0
+    ternary_matmul H1, C0, H0
+    store_output H1
+    halt
+"#;
+
+        let program = assemble(source).unwrap();
+        let mut interp = Interpreter::from_program(&program);
+
+        // Initialize weights
+        if let Some(cold) = interp.cold_reg_mut(0) {
+            for w in cold.weights_mut() {
+                w.polarity = 1;
+                w.magnitude = 100;
+            }
+            // Set all to COLD (threshold = 120)
+            cold.set_all_temperatures(SignalTemperature::Cold);
+        }
+
+        // Weak input (below cold threshold of 120)
+        let weak_input = vec![
+            Signal::positive(50),  // Below 120
+            Signal::positive(50),
+            Signal::positive(50),
+            Signal::positive(50),
+        ];
+
+        let output = interp.forward(&weak_input).unwrap();
+
+        // With weak input below threshold, cold weights should NOT conduct
+        // So output should be zero (or very low due to rounding)
+        assert_eq!(output[0].magnitude, 0, "Cold weights should block weak signals");
     }
 }

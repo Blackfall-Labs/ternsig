@@ -3,6 +3,16 @@
 use super::{ColdBuffer, HotBuffer, Instruction, Interpreter, Register, StepResult};
 
 impl Interpreter {
+    /// Temperature-gated ternary matrix multiply
+    ///
+    /// Signal flow is gated by connection temperature:
+    /// - Hot connections: full conductance, no barrier
+    /// - Cold connections: reduced conductance, need high input intensity
+    ///
+    /// This creates the "flow through heated paths" behavior:
+    /// - Recent/reinforced paths conduct easily
+    /// - Dormant paths need strong signals to activate
+    /// - Old memories can still be reached with sufficient intensity
     pub(super) fn execute_ternary_matmul(&mut self, instr: Instruction) -> StepResult {
         let weights_idx = instr.source.index();
         let input_idx = instr.aux as usize & 0x0F;
@@ -24,13 +34,38 @@ impl Interpreter {
             return StepResult::Error("Weights must be 2D".to_string());
         };
 
+        // Check if this buffer has per-signal temperatures
+        let has_temperatures = weights.temperatures.is_some();
+
         let mut output_data = vec![0i64; out_dim];
         for o in 0..out_dim {
             let mut sum = 0i64;
             for i in 0..in_dim.min(input.data.len()) {
-                let w = &weights.weights[o * in_dim + i];
-                let effective = w.polarity as i64 * w.magnitude as i64;
-                sum += effective * input.data[i] as i64;
+                let weight_idx = o * in_dim + i;
+                let w = &weights.weights[weight_idx];
+                let input_val = input.data[i];
+
+                // Get input intensity (absolute value, clamped to u8)
+                let input_intensity = (input_val.unsigned_abs().min(255)) as u8;
+
+                // Temperature-gated flow
+                if has_temperatures {
+                    let temp = weights.temperature(weight_idx);
+
+                    // Check activation threshold (cold paths need strong input)
+                    if temp.can_conduct(input_intensity) {
+                        let effective = w.polarity as i64 * w.magnitude as i64;
+                        let conductance = temp.conductance() as i64;
+
+                        // Scale by conductance: hot = full, cold = reduced
+                        sum += (effective * input_val as i64 * conductance) / 255;
+                    }
+                    // Below threshold = signal doesn't pass through this connection
+                } else {
+                    // No temperatures = all hot (original behavior)
+                    let effective = w.polarity as i64 * w.magnitude as i64;
+                    sum += effective * input_val as i64;
+                }
             }
             output_data[o] = sum;
         }
@@ -349,6 +384,98 @@ impl Interpreter {
         self.hot_regs[dst_idx] = Some(HotBuffer {
             data: vec![max_val],
             shape: vec![1],
+        });
+
+        StepResult::Continue
+    }
+
+    /// Temperature-gated batch matrix multiply
+    ///
+    /// Applies same weight matrix to each row of input batch with temperature gating.
+    /// Input shape: [batch_size, in_dim] or flat [batch_size * in_dim]
+    /// Weights shape: [out_dim, in_dim]
+    /// Output shape: [batch_size, out_dim]
+    pub(super) fn execute_ternary_batch_matmul(&mut self, instr: Instruction) -> StepResult {
+        let weights_idx = instr.source.index();
+        let input_idx = instr.aux as usize & 0x0F;
+        let output_idx = instr.target.index();
+
+        let weights = match &self.cold_regs[weights_idx] {
+            Some(buf) => buf,
+            None => {
+                return StepResult::Error(format!(
+                    "Cold register C{} not allocated",
+                    weights_idx
+                ))
+            }
+        };
+
+        let input = match &self.hot_regs[input_idx] {
+            Some(buf) => buf,
+            None => {
+                return StepResult::Error(format!("Hot register H{} not allocated", input_idx))
+            }
+        };
+
+        let (out_dim, in_dim) = if weights.shape.len() >= 2 {
+            (weights.shape[0], weights.shape[1])
+        } else {
+            return StepResult::Error("Weights must be 2D".to_string());
+        };
+
+        // Determine batch size from input shape
+        let batch_size = if input.shape.len() >= 2 {
+            input.shape[0]
+        } else if input.data.len() % in_dim == 0 {
+            input.data.len() / in_dim
+        } else {
+            return StepResult::Error(format!(
+                "Input size {} not divisible by in_dim {}",
+                input.data.len(),
+                in_dim
+            ));
+        };
+
+        // Check if this buffer has per-signal temperatures
+        let has_temperatures = weights.temperatures.is_some();
+
+        // Apply matmul to each batch row
+        let mut output_data = Vec::with_capacity(batch_size * out_dim);
+
+        for b in 0..batch_size {
+            let row_start = b * in_dim;
+
+            for o in 0..out_dim {
+                let mut sum = 0i64;
+                for i in 0..in_dim {
+                    let input_val = input.data.get(row_start + i).copied().unwrap_or(0);
+                    let weight_idx = o * in_dim + i;
+                    let w = &weights.weights[weight_idx];
+
+                    // Get input intensity
+                    let input_intensity = (input_val.unsigned_abs().min(255)) as u8;
+
+                    // Temperature-gated flow
+                    if has_temperatures {
+                        let temp = weights.temperature(weight_idx);
+
+                        if temp.can_conduct(input_intensity) {
+                            let effective = w.polarity as i64 * w.magnitude as i64;
+                            let conductance = temp.conductance() as i64;
+                            sum += (effective * input_val as i64 * conductance) / 255;
+                        }
+                    } else {
+                        let effective = w.polarity as i64 * w.magnitude as i64;
+                        sum += effective * input_val as i64;
+                    }
+                }
+                output_data.push(sum.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+            }
+        }
+
+        self.hot_regs[output_idx] = Some(HotBuffer {
+            data: output_data,
+            shape: vec![batch_size, out_dim],
         });
 
         StepResult::Continue
