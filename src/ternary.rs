@@ -292,6 +292,45 @@ impl Signal {
         self.polarity as i32 * self.magnitude as i32
     }
 
+    /// Create from i16 signed value (for intermediate calculations)
+    ///
+    /// Sign becomes polarity, absolute value becomes magnitude (clamped to 0-255)
+    #[inline]
+    pub fn from_i16(value: i16) -> Self {
+        if value == 0 {
+            Self::ZERO
+        } else if value > 0 {
+            Self {
+                polarity: 1,
+                magnitude: (value.min(255)) as u8,
+            }
+        } else {
+            Self {
+                polarity: -1,
+                magnitude: ((-value).min(255)) as u8,
+            }
+        }
+    }
+
+    /// Create from u8 bipolar representation (0-255 maps to -127 to +128)
+    ///
+    /// Used for chemical levels where 128 = baseline, <128 = below, >128 = above.
+    /// This converts a "level" into a "delta from baseline" signal.
+    #[inline]
+    pub fn from_u8_bipolar(level: u8) -> Self {
+        let delta = level as i16 - 128;
+        Self::from_i16(delta)
+    }
+
+    /// Convert to u8 bipolar representation (maps -127..+128 to 0..255)
+    ///
+    /// Inverse of from_u8_bipolar. 0 signal → 128, positive → >128, negative → <128.
+    #[inline]
+    pub fn to_u8_bipolar(&self) -> u8 {
+        let signed = self.polarity as i16 * self.magnitude as i16;
+        (signed + 128).clamp(0, 255) as u8
+    }
+
     /// Get polarity as enum (type-safe)
     #[inline]
     pub fn get_polarity(&self) -> Polarity {

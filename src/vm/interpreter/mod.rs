@@ -7,6 +7,7 @@ mod ops_forward;
 mod ops_ternary;
 mod ops_learning;
 mod ops_control;
+mod ops_runtime;
 
 use super::{AssembledProgram, Action, Instruction, Register};
 use crate::Signal;
@@ -582,6 +583,15 @@ impl Interpreter {
                     StepResult::Halt
                 }
             }
+
+            // Runtime modification ops (ops_runtime.rs) - Phase 6 Structural Plasticity
+            Action::ALLOC_TENSOR => self.execute_alloc_tensor(instr),
+            Action::FREE_TENSOR => self.execute_free_tensor(instr),
+            Action::WIRE_FORWARD => self.execute_wire_forward(instr),
+            Action::WIRE_SKIP => self.execute_wire_skip(instr),
+            Action::GROW_NEURON => self.execute_grow_neuron(instr),
+            Action::PRUNE_NEURON => self.execute_prune_neuron(instr),
+            Action::INIT_RANDOM => self.execute_init_random(instr),
 
             _ => StepResult::Error(format!("Unknown action: {:?}", instr.action)),
         }

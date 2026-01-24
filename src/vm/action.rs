@@ -82,6 +82,15 @@ impl Action {
     pub const FREEZE_LAYER: Self = Self(0x2006);
     /// Unfreeze a layer for training
     pub const UNFREEZE_LAYER: Self = Self(0x2007);
+    /// Grow layer: add neurons to a cold register (increase output dimension)
+    /// target = cold register, aux = number of neurons to add
+    pub const GROW_NEURON: Self = Self(0x2008);
+    /// Prune neuron: remove a neuron from a cold register
+    /// target = cold register, aux = neuron index to remove
+    pub const PRUNE_NEURON: Self = Self(0x2009);
+    /// Initialize cold register with random ternary weights
+    /// target = cold register, modifier encodes seed
+    pub const INIT_RANDOM: Self = Self(0x200A);
 
     // =========================================================================
     // Forward Operations (0x30xx) - Float/Int tensor ops
@@ -381,6 +390,9 @@ impl Action {
             0x2005 => "SET_DTYPE",
             0x2006 => "FREEZE_LAYER",
             0x2007 => "UNFREEZE_LAYER",
+            0x2008 => "GROW_NEURON",
+            0x2009 => "PRUNE_NEURON",
+            0x200A => "INIT_RANDOM",
 
             // Forward
             0x3000 => "MATMUL",
