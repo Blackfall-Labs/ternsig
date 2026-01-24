@@ -120,6 +120,10 @@ pub struct ColdBuffer {
     pub frozen: bool,
     /// Per-signal temperature (None = all HOT)
     pub temperatures: Option<Vec<SignalTemperature>>,
+    /// Per-signal usage counts for consolidation (None = not tracked)
+    usage_counts: Option<Vec<u32>>,
+    /// Last tick when usage was recorded (for decay)
+    last_usage_tick: u64,
 }
 
 impl ColdBuffer {
@@ -131,6 +135,8 @@ impl ColdBuffer {
             thermogram_key: None,
             frozen: false,
             temperatures: None,
+            usage_counts: None,
+            last_usage_tick: 0,
         }
     }
 
@@ -183,6 +189,103 @@ impl ColdBuffer {
         self.temperatures.get_or_insert_with(|| {
             vec![SignalTemperature::Hot; self.weights.len()]
         })
+    }
+
+    // =========================================================================
+    // Usage Tracking (for consolidation)
+    // =========================================================================
+
+    /// Enable usage tracking for this buffer
+    pub fn enable_usage_tracking(&mut self) {
+        if self.usage_counts.is_none() {
+            self.usage_counts = Some(vec![0u32; self.weights.len()]);
+        }
+    }
+
+    /// Record usage for signals that were active during forward pass
+    /// Called by interpreter when signals participate in computation
+    pub fn record_usage(&mut self, active_indices: &[usize], tick: u64) {
+        let counts = match &mut self.usage_counts {
+            Some(c) => c,
+            None => return, // Tracking not enabled
+        };
+
+        for &idx in active_indices {
+            if idx < counts.len() {
+                counts[idx] = counts[idx].saturating_add(1);
+            }
+        }
+        self.last_usage_tick = tick;
+    }
+
+    /// Record usage for a single signal
+    pub fn record_signal_usage(&mut self, idx: usize) {
+        if let Some(counts) = &mut self.usage_counts {
+            if idx < counts.len() {
+                counts[idx] = counts[idx].saturating_add(1);
+            }
+        }
+    }
+
+    /// Get usage count for a specific signal
+    pub fn usage_count(&self, idx: usize) -> u32 {
+        self.usage_counts
+            .as_ref()
+            .and_then(|c| c.get(idx).copied())
+            .unwrap_or(0)
+    }
+
+    /// Get all usage counts (None if tracking not enabled)
+    pub fn usage_counts(&self) -> Option<&[u32]> {
+        self.usage_counts.as_deref()
+    }
+
+    /// Reset all usage counts to zero
+    pub fn reset_usage_counts(&mut self) {
+        if let Some(counts) = &mut self.usage_counts {
+            counts.fill(0);
+        }
+    }
+
+    /// Apply decay to usage counts (for periodic consolidation)
+    /// decay_factor: 0-255 where 255 = no decay, 128 = 50% retention
+    pub fn decay_usage(&mut self, decay_factor: u8) {
+        if let Some(counts) = &mut self.usage_counts {
+            for count in counts.iter_mut() {
+                *count = ((*count as u64 * decay_factor as u64) / 255) as u32;
+            }
+        }
+    }
+
+    /// Get signals that are frequently used (above threshold)
+    pub fn frequently_used(&self, threshold: u32) -> Vec<usize> {
+        match &self.usage_counts {
+            Some(counts) => counts
+                .iter()
+                .enumerate()
+                .filter(|(_, &c)| c >= threshold)
+                .map(|(i, _)| i)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Get signals that are rarely used (below threshold)
+    pub fn rarely_used(&self, threshold: u32) -> Vec<usize> {
+        match &self.usage_counts {
+            Some(counts) => counts
+                .iter()
+                .enumerate()
+                .filter(|(_, &c)| c < threshold)
+                .map(|(i, _)| i)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Get last tick when usage was recorded
+    pub fn last_usage_tick(&self) -> u64 {
+        self.last_usage_tick
     }
 }
 

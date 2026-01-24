@@ -309,26 +309,11 @@ mod tests {
 
     #[test]
     fn test_weight_content_roundtrip() {
-        let buffer = ColdBuffer {
-            weights: vec![
-                Signal {
-                    polarity: 1,
-                    magnitude: 128,
-                },
-                Signal {
-                    polarity: -1,
-                    magnitude: 64,
-                },
-                Signal {
-                    polarity: 0,
-                    magnitude: 0,
-                },
-            ],
-            shape: vec![3],
-            thermogram_key: Some("test.weights".to_string()),
-            frozen: false,
-            temperatures: None,
-        };
+        let mut buffer = ColdBuffer::new(vec![3]);
+        buffer.weights[0] = Signal { polarity: 1, magnitude: 128 };
+        buffer.weights[1] = Signal { polarity: -1, magnitude: 64 };
+        buffer.weights[2] = Signal { polarity: 0, magnitude: 0 };
+        buffer.thermogram_key = Some("test.weights".to_string());
 
         let content = WeightContent::from_cold_buffer("test.weights", &buffer);
         let recovered = content.to_ternary_signals();
