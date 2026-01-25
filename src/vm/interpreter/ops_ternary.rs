@@ -82,6 +82,116 @@ impl Interpreter {
         StepResult::Continue
     }
 
+    pub(super) fn execute_embed_sequence(&mut self, instr: Instruction) -> StepResult {
+        let table_idx = instr.source.index();
+        let count = instr.aux as usize;
+        let output_idx = instr.target.index();
+
+        let table = match &self.cold_regs[table_idx] {
+            Some(buf) => buf,
+            None => return StepResult::Error(format!("Embedding table C{} not allocated", table_idx)),
+        };
+
+        let (num_embeddings, embedding_dim) = if table.shape.len() >= 2 {
+            (table.shape[0], table.shape[1])
+        } else if table.shape.len() == 1 {
+            (1, table.shape[0])
+        } else {
+            return StepResult::Error("Embedding table must have shape".to_string());
+        };
+
+        // Generate sequential indices 0, 1, 2, ..., count-1
+        let actual_count = count.min(num_embeddings);
+        let mut output_data = vec![0i32; actual_count * embedding_dim];
+
+        for i in 0..actual_count {
+            let table_offset = i * embedding_dim;
+            for d in 0..embedding_dim {
+                if table_offset + d < table.weights.len() {
+                    let w = &table.weights[table_offset + d];
+                    output_data[i * embedding_dim + d] = w.polarity as i32 * w.magnitude as i32;
+                }
+            }
+        }
+
+        self.hot_regs[output_idx] = Some(HotBuffer {
+            data: output_data,
+            shape: vec![actual_count, embedding_dim],
+        });
+
+        StepResult::Continue
+    }
+
+    pub(super) fn execute_reduce_mean_dim(&mut self, instr: Instruction) -> StepResult {
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+        let dim = instr.aux as usize;
+
+        let src = match &self.hot_regs[src_idx] {
+            Some(buf) => buf,
+            None => return StepResult::Error(format!("Source H{} not allocated", src_idx)),
+        };
+
+        // Handle based on tensor shape
+        if src.shape.len() < 2 {
+            // 1D tensor: just compute mean of all elements
+            let sum: i64 = src.data.iter().map(|&x| x as i64).sum();
+            let count = src.data.len().max(1);
+            let mean = (sum / count as i64) as i32;
+
+            self.hot_regs[dst_idx] = Some(HotBuffer {
+                data: vec![mean],
+                shape: vec![1],
+            });
+        } else {
+            // 2D tensor: reduce along specified dimension
+            let rows = src.shape[0];
+            let cols = src.shape[1];
+
+            if dim == 0 {
+                // Reduce across rows: output shape (cols,)
+                // For each column, average all row values
+                let mut output_data = vec![0i32; cols];
+                for c in 0..cols {
+                    let mut sum: i64 = 0;
+                    for r in 0..rows {
+                        let idx = r * cols + c;
+                        if idx < src.data.len() {
+                            sum += src.data[idx] as i64;
+                        }
+                    }
+                    output_data[c] = (sum / rows.max(1) as i64) as i32;
+                }
+
+                self.hot_regs[dst_idx] = Some(HotBuffer {
+                    data: output_data,
+                    shape: vec![cols],
+                });
+            } else {
+                // Reduce across cols (dim=1): output shape (rows,)
+                // For each row, average all column values
+                let mut output_data = vec![0i32; rows];
+                for r in 0..rows {
+                    let mut sum: i64 = 0;
+                    for c in 0..cols {
+                        let idx = r * cols + c;
+                        if idx < src.data.len() {
+                            sum += src.data[idx] as i64;
+                        }
+                    }
+                    output_data[r] = (sum / cols.max(1) as i64) as i32;
+                }
+
+                self.hot_regs[dst_idx] = Some(HotBuffer {
+                    data: output_data,
+                    shape: vec![rows],
+                });
+            }
+        }
+
+        StepResult::Continue
+    }
+
     pub(super) fn execute_reduce_avg(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();

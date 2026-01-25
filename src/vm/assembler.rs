@@ -31,15 +31,19 @@ use std::collections::HashMap;
 pub struct AssembledProgram {
     /// Program name
     pub name: String,
+    /// Program version (from .meta)
+    pub version: u32,
+    /// Domain category (from .meta, e.g. "fleet.classifier")
+    pub domain: Option<String>,
     /// Register definitions
     pub registers: Vec<RegisterMeta>,
     /// Compiled instructions
     pub instructions: Vec<Instruction>,
     /// Labels to instruction indices
     pub labels: HashMap<String, usize>,
-    /// Input shape
+    /// Input shape (inferred from load_input)
     pub input_shape: Vec<usize>,
-    /// Output shape
+    /// Output shape (inferred from store_output)
     pub output_shape: Vec<usize>,
 }
 
@@ -107,6 +111,16 @@ pub struct Assembler {
     labels: HashMap<String, usize>,
     /// Unresolved label references (instruction index, label name)
     unresolved_labels: Vec<(usize, String)>,
+    /// Meta: program name
+    meta_name: Option<String>,
+    /// Meta: program version
+    meta_version: u32,
+    /// Meta: domain category
+    meta_domain: Option<String>,
+    /// Meta: declared input dimension (for validation)
+    meta_input_dim: Option<usize>,
+    /// Meta: declared output dimension (for validation)
+    meta_output_dim: Option<usize>,
 }
 
 impl Assembler {
@@ -117,6 +131,11 @@ impl Assembler {
             instructions: Vec::new(),
             labels: HashMap::new(),
             unresolved_labels: Vec::new(),
+            meta_name: None,
+            meta_version: 1,
+            meta_domain: None,
+            meta_input_dim: None,
+            meta_output_dim: None,
         }
     }
 
@@ -126,9 +145,16 @@ impl Assembler {
         self.instructions.clear();
         self.labels.clear();
         self.unresolved_labels.clear();
+        self.meta_name = None;
+        self.meta_version = 1;
+        self.meta_domain = None;
+        self.meta_input_dim = None;
+        self.meta_output_dim = None;
 
+        let mut in_meta = false;
         let mut in_registers = false;
         let mut in_program = false;
+        let mut in_skipped_section = false; // .aliases, .config - content ignored
 
         for (idx, line) in source.lines().enumerate() {
             self.line_number = idx + 1;
@@ -153,14 +179,44 @@ impl Assembler {
             // Section directives
             if line.starts_with('.') {
                 match line.to_lowercase().as_str() {
+                    ".meta" => {
+                        in_meta = true;
+                        in_registers = false;
+                        in_program = false;
+                        in_skipped_section = false;
+                        continue;
+                    }
                     ".registers" => {
+                        in_meta = false;
                         in_registers = true;
                         in_program = false;
+                        in_skipped_section = false;
                         continue;
                     }
                     ".program" | ".code" => {
+                        in_meta = false;
                         in_registers = false;
                         in_program = true;
+                        in_skipped_section = false;
+                        continue;
+                    }
+                    ".aliases" => {
+                        // Aliases section - register aliases like "H_HIDDEN H1"
+                        // We skip this section as aliases are syntactic sugar
+                        // that the source files can resolve without us tracking them
+                        in_meta = false;
+                        in_registers = false;
+                        in_program = false;
+                        in_skipped_section = true;
+                        continue;
+                    }
+                    ".config" => {
+                        // Config section - additional configuration
+                        // Skip for forward compatibility
+                        in_meta = false;
+                        in_registers = false;
+                        in_program = false;
+                        in_skipped_section = true;
                         continue;
                     }
                     _ => {
@@ -170,9 +226,18 @@ impl Assembler {
             }
 
             // Parse content based on section
-            if in_registers {
+            if in_skipped_section {
+                // Skip content in .aliases, .config sections
+                continue;
+            } else if in_meta {
+                self.parse_meta(line)?;
+            } else if in_registers {
                 self.parse_register(line)?;
             } else if in_program {
+                // Handle include directive - skip as we use embedded firmware
+                if line.starts_with("include") {
+                    continue;
+                }
                 self.parse_instruction(line)?;
             } else {
                 return Err(self.error("Code outside of section".to_string()));
@@ -186,8 +251,30 @@ impl Assembler {
         let input_shape = self.infer_input_shape();
         let output_shape = self.infer_output_shape();
 
+        // Validate declared vs inferred dimensions (warn, don't error)
+        if let Some(declared) = self.meta_input_dim {
+            let inferred: usize = input_shape.iter().product();
+            if declared != inferred {
+                log::warn!(
+                    "Input dim mismatch: .meta declares {}, inferred {} from registers",
+                    declared, inferred
+                );
+            }
+        }
+        if let Some(declared) = self.meta_output_dim {
+            let inferred: usize = output_shape.iter().product();
+            if declared != inferred {
+                log::warn!(
+                    "Output dim mismatch: .meta declares {}, inferred {} from registers",
+                    declared, inferred
+                );
+            }
+        }
+
         Ok(AssembledProgram {
-            name: String::new(),
+            name: self.meta_name.clone().unwrap_or_default(),
+            version: self.meta_version,
+            domain: self.meta_domain.clone(),
             registers: self.registers.clone(),
             instructions: self.instructions.clone(),
             labels: self.labels.clone(),
@@ -196,10 +283,63 @@ impl Assembler {
         })
     }
 
+    /// Parse a .meta section line
+    fn parse_meta(&mut self, line: &str) -> Result<(), AssemblerError> {
+        // Format: key  value  or  key  "string value"
+        // Examples:
+        //   name        "complexity_classifier"
+        //   version     1
+        //   input_dim   48
+        //   output_dim  3
+        //   domain      "fleet.classifier"
+
+        let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
+        if parts.is_empty() {
+            return Ok(()); // Empty line
+        }
+
+        let key = parts[0].trim().to_lowercase();
+        let value = parts.get(1).map(|s| s.trim()).unwrap_or("");
+
+        match key.as_str() {
+            "name" => {
+                // Remove surrounding quotes if present
+                let name = value.trim_matches('"').to_string();
+                self.meta_name = Some(name);
+            }
+            "version" => {
+                let version = value.parse::<u32>()
+                    .map_err(|_| self.error(format!("Invalid version: {}", value)))?;
+                self.meta_version = version;
+            }
+            "input_dim" => {
+                let dim = value.parse::<usize>()
+                    .map_err(|_| self.error(format!("Invalid input_dim: {}", value)))?;
+                self.meta_input_dim = Some(dim);
+            }
+            "output_dim" => {
+                let dim = value.parse::<usize>()
+                    .map_err(|_| self.error(format!("Invalid output_dim: {}", value)))?;
+                self.meta_output_dim = Some(dim);
+            }
+            "domain" => {
+                let domain = value.trim_matches('"').to_string();
+                self.meta_domain = Some(domain);
+            }
+            _ => {
+                // Unknown meta key - just ignore for forward compatibility
+                log::debug!("Ignoring unknown .meta key: {}", key);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Parse a register definition line
     fn parse_register(&mut self, line: &str) -> Result<(), AssemblerError> {
         // Format: C0: ternary[32, 12]  key="chip.audio.w1"
         // Or:     H0: i32[12]
+        // Or:     T0: f32              (scalar - no brackets means shape [1])
 
         let colon_pos = line
             .find(':')
@@ -212,29 +352,40 @@ impl Assembler {
         let reg = Register::parse(reg_name)
             .ok_or_else(|| self.error(format!("Invalid register: {}", reg_name)))?;
 
-        // Parse type and shape: ternary[32, 12] or i32[12]
-        let bracket_start = rest
-            .find('[')
-            .ok_or_else(|| self.error("Missing '[' in type definition".to_string()))?;
-        let bracket_end = rest
-            .find(']')
-            .ok_or_else(|| self.error("Missing ']' in type definition".to_string()))?;
+        // Parse type and shape: ternary[32, 12] or i32[12] or f32 (scalar)
+        let (dtype_str, shape) = if let Some(bracket_start) = rest.find('[') {
+            // Has brackets - parse shape
+            let bracket_end = rest
+                .find(']')
+                .ok_or_else(|| self.error("Missing ']' in type definition".to_string()))?;
 
-        let dtype_str = rest[..bracket_start].trim();
-        let shape_str = &rest[bracket_start + 1..bracket_end];
+            let dtype_str = rest[..bracket_start].trim();
+            let shape_str = &rest[bracket_start + 1..bracket_end];
+
+            // Parse shape dimensions
+            let shape: Vec<usize> = shape_str
+                .split(',')
+                .map(|s| {
+                    s.trim()
+                        .parse()
+                        .map_err(|_| self.error(format!("Invalid dimension: {}", s.trim())))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            (dtype_str, shape)
+        } else {
+            // No brackets - scalar type, shape is [1]
+            // Extract dtype (first word before any whitespace or key=)
+            let dtype_str = rest
+                .split(|c: char| c.is_whitespace())
+                .next()
+                .unwrap_or(rest)
+                .trim();
+            (dtype_str, vec![1])
+        };
 
         let dtype = Dtype::parse(dtype_str)
             .ok_or_else(|| self.error(format!("Unknown dtype: {}", dtype_str)))?;
-
-        // Parse shape dimensions
-        let shape: Vec<usize> = shape_str
-            .split(',')
-            .map(|s| {
-                s.trim()
-                    .parse()
-                    .map_err(|_| self.error(format!("Invalid dimension: {}", s.trim())))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
 
         // Parse optional key="..."
         let thermogram_key = if let Some(key_pos) = rest.find("key=") {
@@ -338,6 +489,12 @@ impl Assembler {
                 let input = self.parse_register_operand(ops.get(2))?;
                 Ok(Instruction::ternary_matmul(target, weights, input))
             }
+            "ternary_batch_matmul" => {
+                let target = self.parse_register_operand(ops.get(0))?;
+                let weights = self.parse_register_operand(ops.get(1))?;
+                let input = self.parse_register_operand(ops.get(2))?;
+                Ok(Instruction::ternary_batch_matmul(target, weights, input))
+            }
             "add" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
@@ -391,6 +548,17 @@ impl Assembler {
                 let source = self.parse_register_operand(ops.get(1))?;
                 Ok(Instruction::new(
                     Action::GELU,
+                    target,
+                    source,
+                    0,
+                    [0, 0, 0],
+                ))
+            }
+            "tanh" => {
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                Ok(Instruction::new(
+                    Action::TANH,
                     target,
                     source,
                     0,
@@ -519,6 +687,13 @@ impl Assembler {
                 let indices = self.parse_register_operand(ops.get(2))?;
                 Ok(Instruction::embed_lookup(target, table, indices))
             }
+            "embed_sequence" => {
+                // embed_sequence target, table, count
+                let target = self.parse_register_operand(ops.get(0))?;
+                let table = self.parse_register_operand(ops.get(1))?;
+                let count = self.parse_immediate(ops.get(2))? as u8;
+                Ok(Instruction::embed_sequence(target, table, count))
+            }
             "reduce_avg" => {
                 // reduce_avg target, source, start, count
                 let target = self.parse_register_operand(ops.get(0))?;
@@ -526,6 +701,13 @@ impl Assembler {
                 let start = self.parse_immediate(ops.get(2))? as u8;
                 let count = self.parse_immediate(ops.get(3))? as u8;
                 Ok(Instruction::reduce_avg(target, source, start, count))
+            }
+            "reduce_mean" | "mean_dim" => {
+                // reduce_mean target, source, dim
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let dim = self.parse_immediate(ops.get(2))? as u8;
+                Ok(Instruction::reduce_mean_dim(target, source, dim))
             }
             "slice" | "narrow" => {
                 // slice target, source, start, len

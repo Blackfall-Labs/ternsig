@@ -584,6 +584,7 @@ impl Interpreter {
             Action::RELU => self.execute_relu(instr),
             Action::SIGMOID => self.execute_sigmoid(instr),
             Action::GELU => self.execute_gelu(instr),
+            Action::TANH => self.execute_tanh(instr),
             Action::SOFTMAX => self.execute_softmax(instr),
             Action::SHIFT => self.execute_shift(instr),
             Action::CMP_GT => self.execute_cmp_gt(instr),

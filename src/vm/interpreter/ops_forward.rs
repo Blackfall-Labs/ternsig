@@ -277,6 +277,41 @@ impl Interpreter {
         StepResult::Continue
     }
 
+    pub(super) fn execute_tanh(&mut self, instr: Instruction) -> StepResult {
+        let src_idx = instr.source.index();
+        let dst_idx = instr.target.index();
+
+        let src = match &self.hot_regs[src_idx] {
+            Some(buf) => buf.clone(),
+            None => return StepResult::Error("Source not allocated".to_string()),
+        };
+
+        // Integer tanh: tanh(x) ≈ x / (1 + |x|/k) for soft saturation
+        // Input is centered at 128 (0 maps to -128, 128 maps to 0, 255 maps to +127)
+        // Output is also centered at 128
+        let result: Vec<i32> = src
+            .data
+            .iter()
+            .map(|&v| {
+                // Center around 0 for tanh calculation
+                let centered = v - 128;
+                // Apply soft saturation: tanh ≈ x / (1 + |x|/64)
+                let abs_val = centered.abs();
+                let denom = 64 + (abs_val >> 1);
+                let tanh_val = (centered * 64) / denom.max(1);
+                // Map back to [0, 255] centered at 128
+                (tanh_val + 128).clamp(0, 255)
+            })
+            .collect();
+
+        self.hot_regs[dst_idx] = Some(HotBuffer {
+            data: result,
+            shape: src.shape.clone(),
+        });
+
+        StepResult::Continue
+    }
+
     pub(super) fn execute_softmax(&mut self, instr: Instruction) -> StepResult {
         let src_idx = instr.source.index();
         let dst_idx = instr.target.index();

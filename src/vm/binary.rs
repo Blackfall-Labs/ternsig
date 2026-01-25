@@ -413,6 +413,8 @@ pub fn deserialize(data: &[u8]) -> Result<AssembledProgram> {
 
     Ok(AssembledProgram {
         name: String::new(),          // Name not preserved in binary
+        version: 1,                   // Version not preserved in binary
+        domain: None,                 // Domain not preserved in binary
         registers,
         instructions,
         labels: HashMap::new(),       // Labels not preserved in binary

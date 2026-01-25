@@ -1,0 +1,18 @@
+; Rule Encoder - encodes rule type + scope into 32-dim embedding
+; Input: 17 elements (1 rule_type + 16 scope indices)
+; Output: 32-dim rule embedding
+
+.registers
+    C0: ternary[32, 17]  key="reasoning.rule_encoder.w1"
+    C1: ternary[32]      key="reasoning.rule_encoder.b1"
+    H0: i32[17]
+    H1: i32[32]
+    H2: i32[32]
+
+.program
+    load_input H0
+    ternary_matmul H1, C0, H0
+    add H2, H1, C1
+    relu H2, H2
+    store_output H2
+    halt

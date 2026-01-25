@@ -9,6 +9,9 @@ keywords = ["ternary", "neural", "learning", "cognitive", "cpu"]
 categories = ["science", "simulation"]
 
 [dependencies]
+# Card format
+datacard-rs = { path = "../datacard-rs" }
+
 # Persistence
 thermogram = "0.5"
 
@@ -35,3 +38,7 @@ serde = []
 
 [dev-dependencies]
 tempfile = "3.0"
+
+[[bin]]
+name = "ternsig-validate"
+path = "src/bin/ternsig-validate.rs"

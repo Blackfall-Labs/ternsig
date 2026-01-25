@@ -3,18 +3,18 @@
 //! ## Register Banks
 //!
 //! ```text
-//! Hot Bank   (0x00-0x0F): Activations/intermediates (volatile, cleared between runs)
-//! Cold Bank  (0x10-0x1F): Weights (Signal, persistent via Thermogram)
-//! Param Bank (0x20-0x2F): Scalars (learning_rate, babble_scale, etc.)
-//! Shape Bank (0x30-0x3F): Dimension metadata
+//! Hot Bank   (0x00-0x3F): Activations/intermediates (volatile, cleared between runs)
+//! Cold Bank  (0x40-0x7F): Weights (Signal, persistent via Thermogram)
+//! Param Bank (0x80-0xBF): Scalars (learning_rate, babble_scale, etc.)
+//! Shape Bank (0xC0-0xFF): Dimension metadata
 //! ```
 //!
 //! ## Encoding
 //!
-//! Register ID is 1 byte: `[BANK:4 bits][INDEX:4 bits]`
+//! Register ID is 1 byte: `[BANK:2 bits][INDEX:6 bits]`
 //!
 //! - Banks 0-3 map to Hot/Cold/Param/Shape
-//! - Index 0-15 within each bank
+//! - Index 0-63 within each bank
 
 use std::fmt;
 
@@ -28,25 +28,25 @@ pub enum RegisterBank {
 
     /// Cold registers: weights (persistent in Thermogram)
     /// Signal storage, survives restarts
-    Cold = 0x10,
+    Cold = 0x40,
 
     /// Param registers: scalars (learning rate, etc.)
     /// Configuration values, may be modified during training
-    Param = 0x20,
+    Param = 0x80,
 
     /// Shape registers: dimension metadata
     /// Stores tensor shapes for runtime validation
-    Shape = 0x30,
+    Shape = 0xC0,
 }
 
 impl RegisterBank {
-    /// Get bank from register ID
+    /// Get bank from register ID (top 2 bits)
     pub const fn from_id(id: u8) -> Self {
-        match id >> 4 {
-            0x0 => Self::Hot,
-            0x1 => Self::Cold,
-            0x2 => Self::Param,
-            0x3 => Self::Shape,
+        match id >> 6 {
+            0b00 => Self::Hot,
+            0b01 => Self::Cold,
+            0b10 => Self::Param,
+            0b11 => Self::Shape,
             _ => Self::Hot, // Default to hot for unknown
         }
     }
@@ -88,28 +88,28 @@ impl fmt::Display for RegisterBank {
 pub struct Register(pub u8);
 
 impl Register {
-    /// Create a hot register (H0-HF)
+    /// Create a hot register (H0-H63)
     pub const fn hot(index: u8) -> Self {
-        debug_assert!(index < 16, "Register index must be 0-15");
-        Self(RegisterBank::Hot as u8 | (index & 0x0F))
+        debug_assert!(index < 64, "Register index must be 0-63");
+        Self(RegisterBank::Hot as u8 | (index & 0x3F))
     }
 
-    /// Create a cold register (C0-CF)
+    /// Create a cold register (C0-C63)
     pub const fn cold(index: u8) -> Self {
-        debug_assert!(index < 16, "Register index must be 0-15");
-        Self(RegisterBank::Cold as u8 | (index & 0x0F))
+        debug_assert!(index < 64, "Register index must be 0-63");
+        Self(RegisterBank::Cold as u8 | (index & 0x3F))
     }
 
-    /// Create a param register (P0-PF)
+    /// Create a param register (P0-P63)
     pub const fn param(index: u8) -> Self {
-        debug_assert!(index < 16, "Register index must be 0-15");
-        Self(RegisterBank::Param as u8 | (index & 0x0F))
+        debug_assert!(index < 64, "Register index must be 0-63");
+        Self(RegisterBank::Param as u8 | (index & 0x3F))
     }
 
-    /// Create a shape register (S0-SF)
+    /// Create a shape register (S0-S63)
     pub const fn shape(index: u8) -> Self {
-        debug_assert!(index < 16, "Register index must be 0-15");
-        Self(RegisterBank::Shape as u8 | (index & 0x0F))
+        debug_assert!(index < 64, "Register index must be 0-63");
+        Self(RegisterBank::Shape as u8 | (index & 0x3F))
     }
 
     /// Get the register bank
@@ -117,9 +117,9 @@ impl Register {
         RegisterBank::from_id(self.0)
     }
 
-    /// Get the index within the bank (0-15)
+    /// Get the index within the bank (0-63)
     pub const fn index(&self) -> usize {
-        (self.0 & 0x0F) as usize
+        (self.0 & 0x3F) as usize
     }
 
     /// Get the raw register ID
@@ -155,7 +155,8 @@ impl Register {
         self.0 == 0xFF
     }
 
-    /// Parse from string like "H0", "C5", "P3", "S2"
+    /// Parse from string like "H0", "C5", "P3", "S2", "T0"
+    /// T (temporary) registers map to Hot bank for volatile working space
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim().to_uppercase();
         if s.len() < 2 {
@@ -164,6 +165,7 @@ impl Register {
 
         let bank = match s.chars().next()? {
             'H' => RegisterBank::Hot,
+            'T' => RegisterBank::Hot, // Temporaries are also hot (volatile)
             'C' => RegisterBank::Cold,
             'P' => RegisterBank::Param,
             'S' => RegisterBank::Shape,
@@ -177,7 +179,7 @@ impl Register {
             index_str.parse().ok()?
         };
 
-        if index > 15 {
+        if index > 63 {
             return None;
         }
 
@@ -423,7 +425,9 @@ mod tests {
         assert_eq!(Register::parse("P15"), Some(Register::param(15)));
         assert_eq!(Register::parse("S0"), Some(Register::shape(0)));
         assert_eq!(Register::parse("X0"), None);
-        assert_eq!(Register::parse("H16"), None); // Out of range
+        assert_eq!(Register::parse("H16"), Some(Register::hot(16))); // Now valid
+        assert_eq!(Register::parse("H63"), Some(Register::hot(63))); // Max valid
+        assert_eq!(Register::parse("H64"), None); // Out of range
     }
 
     #[test]

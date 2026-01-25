@@ -182,6 +182,17 @@ impl Action {
     /// Gate update: target = gate * update + (1 - gate) * state
     /// source = gate values, aux = update register, modifier references state register
     pub const GATE_UPDATE: Self = Self(0x4012);
+    /// Ternary batch matrix multiply: applies same weight matrix to each row of input batch
+    /// target[i] = weights @ input[i] for each i
+    pub const TERNARY_BATCH_MATMUL: Self = Self(0x4013);
+    /// Embed sequence: target[i] = table[i] for i in 0..count
+    /// Generates sequential position embeddings (0, 1, 2, ..., count-1)
+    /// aux encodes count of positions to embed
+    pub const EMBED_SEQUENCE: Self = Self(0x4014);
+    /// Reduce mean along dimension: target = mean(source, dim)
+    /// For 2D tensor (rows, cols), dim=0 gives (cols,), dim=1 gives (rows,)
+    /// aux encodes dimension to reduce along
+    pub const REDUCE_MEAN_DIM: Self = Self(0x4015);
 
     // =========================================================================
     // Learning Operations (0x50xx)
@@ -433,6 +444,9 @@ impl Action {
             0x4010 => "UNSQUEEZE",
             0x4011 => "TRANSPOSE",
             0x4012 => "GATE_UPDATE",
+            0x4013 => "TERNARY_BATCH_MATMUL",
+            0x4014 => "EMBED_SEQUENCE",
+            0x4015 => "REDUCE_MEAN_DIM",
 
             // Learning
             0x5000 => "MARK_ELIGIBILITY",

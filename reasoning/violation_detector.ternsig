@@ -1,0 +1,25 @@
+; Violation Detector - detects rule violations from embeddings
+; Input: 64 elements (32 rule_embedding + 32 state_embedding)
+; Output: 1 element (violation probability)
+
+.registers
+    C0: ternary[16, 64]  key="reasoning.violation.w1"
+    C1: ternary[16]      key="reasoning.violation.b1"
+    C2: ternary[1, 16]   key="reasoning.violation.w2"
+    C3: ternary[1]       key="reasoning.violation.b2"
+    H0: i32[64]
+    H1: i32[16]
+    H2: i32[16]
+    H3: i32[1]
+    H4: i32[1]
+
+.program
+    load_input H0
+    ternary_matmul H1, C0, H0
+    add H2, H1, C1
+    relu H2, H2
+    ternary_matmul H3, C2, H2
+    add H4, H3, C3
+    sigmoid H4, H4
+    store_output H4
+    halt

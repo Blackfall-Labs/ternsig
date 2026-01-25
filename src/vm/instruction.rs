@@ -114,6 +114,15 @@ impl Instruction {
         Self::new(Action::TERNARY_MATMUL, target, weights, input.0, [0, 0, 0])
     }
 
+    /// Ternary batch matrix multiply: target[i] = weights @ input[i] for each batch element
+    pub const fn ternary_batch_matmul(
+        target: Register,
+        weights: Register,
+        input: Register,
+    ) -> Self {
+        Self::new(Action::TERNARY_BATCH_MATMUL, target, weights, input.0, [0, 0, 0])
+    }
+
     /// Add: target = source + aux_reg
     pub const fn add(
         target: Register,
@@ -159,6 +168,19 @@ impl Instruction {
         Self::new(Action::EMBED_LOOKUP, target, table, indices.0, [0, 0, 0])
     }
 
+    /// Embed sequence: target[i] = table[i] for i in 0..count
+    /// Generates sequential position embeddings (0, 1, 2, ..., count-1)
+    /// table is a 2D cold register (num_positions x embedding_dim)
+    /// count is the number of positions to embed
+    /// output is a hot register receiving (count x embedding_dim) embeddings
+    pub const fn embed_sequence(
+        target: Register,
+        table: Register,
+        count: u8,
+    ) -> Self {
+        Self::new(Action::EMBED_SEQUENCE, target, table, count, [0, 0, 0])
+    }
+
     /// Reduce average: target[0] = mean(source[start..start+count])
     /// Useful for band pooling in audio, spatial pooling, etc.
     pub const fn reduce_avg(
@@ -168,6 +190,18 @@ impl Instruction {
         count: u8,
     ) -> Self {
         Self::new(Action::REDUCE_AVG, target, source, start, [count, 0, 0])
+    }
+
+    /// Reduce mean along dimension: target = mean(source, dim)
+    /// For 2D tensor (rows, cols):
+    ///   dim=0: reduce across rows → output shape (cols,)
+    ///   dim=1: reduce across cols → output shape (rows,)
+    pub const fn reduce_mean_dim(
+        target: Register,
+        source: Register,
+        dim: u8,
+    ) -> Self {
+        Self::new(Action::REDUCE_MEAN_DIM, target, source, dim, [0, 0, 0])
     }
 
     /// Slice: target = source[start..start+len]

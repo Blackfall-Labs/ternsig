@@ -83,3 +83,17 @@ pub use thermo::{
 // Error types
 mod error;
 pub use error::TernsigError;
+
+// Program loader - clean API for loading .ternsig/.card files
+pub mod loader;
+pub use loader::{
+    ProgramLoader, load_path, load_string,
+    TernsigFormat, TernsigCard,
+};
+
+// Validation utilities
+pub mod validate;
+pub use validate::{
+    validate_file, validate_directory,
+    ValidationResult, ValidationError, ValidationSummary,
+};

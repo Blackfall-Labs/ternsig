@@ -1,0 +1,18 @@
+; State Encoder - encodes values + positions into 32-dim embedding
+; Input: 32 elements (16 values + 16 positions)
+; Output: 32-dim state embedding
+
+.registers
+    C0: ternary[32, 32]  key="reasoning.state_encoder.w1"
+    C1: ternary[32]      key="reasoning.state_encoder.b1"
+    H0: i32[32]
+    H1: i32[32]
+    H2: i32[32]
+
+.program
+    load_input H0
+    ternary_matmul H1, C0, H0
+    add H2, H1, C1
+    relu H2, H2
+    store_output H2
+    halt
