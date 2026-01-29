@@ -1,6 +1,6 @@
 [package]
 name = "ternsig"
-version = "0.5.0"
+version = "1.0.0"
 edition = "2021"
 description = "Signal foundation - Signal ISA, adaptive mastery learning, thermogram integration"
 license = "MIT OR Apache-2.0"
@@ -13,10 +13,10 @@ categories = ["science", "simulation"]
 ternary-signal = "0.1"
 
 # Card format
-datacard-rs = { path = "../datacard-rs" }
+datacard-rs = "1.0.0"
 
 # Persistence
-thermogram = { path = "../thermogram-rs" }
+thermogram = "1.0.0"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
