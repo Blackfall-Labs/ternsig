@@ -24,14 +24,12 @@ impl Interpreter {
     /// For hot registers: allocates i32 buffer
     /// For cold registers: allocates Signal buffer with optional thermogram key
     pub(super) fn execute_alloc_tensor(&mut self, instr: Instruction) -> StepResult {
-        let target = instr.target;
+        let target = instr.target();
         let idx = target.index();
 
-        // Decode shape from modifier
-        // modifier[0] = dim0 (up to 255)
-        // modifier[1..2] = dim1 as u16 (up to 65535, or 0 for 1D)
-        let dim0 = instr.modifier[0] as usize;
-        let dim1 = ((instr.modifier[1] as usize) << 8) | (instr.modifier[2] as usize);
+        // TVMR operand layout: [target, dim0, dim1_hi, dim1_lo]
+        let dim0 = instr.operands[1] as usize;
+        let dim1 = ((instr.operands[2] as usize) << 8) | (instr.operands[3] as usize);
 
         let shape = if dim1 == 0 {
             vec![dim0]
@@ -72,7 +70,7 @@ impl Interpreter {
     /// Instruction format:
     /// - target: Register to free (H0-H15 or C0-C15)
     pub(super) fn execute_free_tensor(&mut self, instr: Instruction) -> StepResult {
-        let target = instr.target;
+        let target = instr.target();
         let idx = target.index();
 
         if target.is_hot() {
@@ -110,9 +108,9 @@ impl Interpreter {
     /// - source: Weights cold register
     /// - aux: Input hot register index
     pub(super) fn execute_wire_forward(&mut self, instr: Instruction) -> StepResult {
-        let output_idx = instr.target.index();
-        let weights_idx = instr.source.index();
-        let input_idx = instr.aux as usize;
+        let output_idx = instr.target().index();
+        let weights_idx = instr.source().index();
+        let input_idx = instr.aux() as usize;
 
         // Use the runtime_mod implementation
         self.wire_forward(output_idx, weights_idx, input_idx)
@@ -127,9 +125,9 @@ impl Interpreter {
     /// - source: Input1 hot register
     /// - aux: Input2 hot register index
     pub(super) fn execute_wire_skip(&mut self, instr: Instruction) -> StepResult {
-        let output_idx = instr.target.index();
-        let input1_idx = instr.source.index();
-        let input2_idx = instr.aux as usize;
+        let output_idx = instr.target().index();
+        let input1_idx = instr.source().index();
+        let input2_idx = instr.aux() as usize;
 
         // Use the runtime_mod implementation
         self.wire_skip(output_idx, input1_idx, input2_idx)
@@ -145,8 +143,8 @@ impl Interpreter {
     /// - aux: Number of neurons to add (1-255)
     /// - modifier[0..2]: Random seed for initialization
     pub(super) fn execute_grow_neuron(&mut self, instr: Instruction) -> StepResult {
-        let idx = instr.target.index();
-        let neurons_to_add = instr.aux as usize;
+        let idx = instr.target().index();
+        let neurons_to_add = instr.aux() as usize;
 
         if neurons_to_add == 0 {
             return StepResult::Error("Cannot grow by 0 neurons".to_string());
@@ -169,9 +167,8 @@ impl Interpreter {
             return StepResult::Error("Cannot grow empty register".to_string());
         }
 
-        let seed = ((instr.modifier[0] as u64) << 16)
-            | ((instr.modifier[1] as u64) << 8)
-            | (instr.modifier[2] as u64);
+        // TVMR: seed from modifier byte (operands[3])
+        let seed = instr.modifier()[0] as u64;
 
         if cold.shape.len() == 1 {
             // 1D: just extend
@@ -244,8 +241,8 @@ impl Interpreter {
     /// - target: Cold register to prune
     /// - aux: Index of neuron to remove
     pub(super) fn execute_prune_neuron(&mut self, instr: Instruction) -> StepResult {
-        let idx = instr.target.index();
-        let neuron_idx = instr.aux as usize;
+        let idx = instr.target().index();
+        let neuron_idx = instr.aux() as usize;
 
         let cold = match self.cold_regs[idx].as_mut() {
             Some(c) => c,
@@ -327,11 +324,10 @@ impl Interpreter {
     /// - target: Cold register to initialize
     /// - modifier[0..2]: Random seed
     pub(super) fn execute_init_random(&mut self, instr: Instruction) -> StepResult {
-        let idx = instr.target.index();
+        let idx = instr.target().index();
 
-        let seed = ((instr.modifier[0] as u64) << 16)
-            | ((instr.modifier[1] as u64) << 8)
-            | (instr.modifier[2] as u64);
+        // TVMR: seed from modifier byte (operands[3])
+        let seed = instr.modifier()[0] as u64;
 
         // Use the runtime_mod implementation
         self.init_cold_random(idx, seed);
@@ -363,12 +359,10 @@ mod tests {
         assert!(interp.hot_reg(1).is_none());
 
         // Allocate H1 with shape [8]
-        let alloc_instr = Instruction::new(
-            crate::vm::Action::ALLOC_TENSOR,
-            crate::vm::Register::hot(1),
-            crate::vm::Register::NULL,
-            0,
-            [8, 0, 0], // shape = [8]
+        // TVMR format: [target, dim0, dim1_hi, dim1_lo]
+        let alloc_instr = Instruction::core(
+            Action::ALLOC_TENSOR.0,
+            [Register::hot(1).0, 8, 0, 0], // target=H1, dim0=8, dim1=0 (1D)
         );
         let result = interp.execute_alloc_tensor(alloc_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -376,12 +370,9 @@ mod tests {
         assert_eq!(interp.hot_reg(1).unwrap().shape, vec![8]);
 
         // Free H1
-        let free_instr = Instruction::new(
-            crate::vm::Action::FREE_TENSOR,
-            crate::vm::Register::hot(1),
-            crate::vm::Register::NULL,
-            0,
-            [0, 0, 0],
+        let free_instr = Instruction::core(
+            Action::FREE_TENSOR.0,
+            [Register::hot(1).0, 0, 0, 0],
         );
         let result = interp.execute_free_tensor(free_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -393,12 +384,10 @@ mod tests {
         let mut interp = Interpreter::new();
 
         // Allocate C0 with shape [4, 2]
-        let alloc_instr = Instruction::new(
-            crate::vm::Action::ALLOC_TENSOR,
-            crate::vm::Register::cold(0),
-            crate::vm::Register::NULL,
-            0,
-            [4, 0, 2], // shape = [4, 2] (dim0=4, dim1=2)
+        // TVMR format: [target, dim0, dim1_hi, dim1_lo]
+        let alloc_instr = Instruction::core(
+            Action::ALLOC_TENSOR.0,
+            [Register::cold(0).0, 4, 0, 2], // target=C0, dim0=4, dim1=2
         );
         let result = interp.execute_alloc_tensor(alloc_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -406,12 +395,9 @@ mod tests {
         assert_eq!(interp.cold_reg(0).unwrap().shape, vec![4, 2]);
 
         // Free C0
-        let free_instr = Instruction::new(
-            crate::vm::Action::FREE_TENSOR,
-            crate::vm::Register::cold(0),
-            crate::vm::Register::NULL,
-            0,
-            [0, 0, 0],
+        let free_instr = Instruction::core(
+            Action::FREE_TENSOR.0,
+            [Register::cold(0).0, 0, 0, 0],
         );
         let result = interp.execute_free_tensor(free_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -432,12 +418,9 @@ mod tests {
         let mut interp = Interpreter::from_program(&program);
 
         // Try to allocate H0 again - should error
-        let alloc_instr = Instruction::new(
-            crate::vm::Action::ALLOC_TENSOR,
-            crate::vm::Register::hot(0),
-            crate::vm::Register::NULL,
-            0,
-            [8, 0, 0],
+        let alloc_instr = Instruction::core(
+            Action::ALLOC_TENSOR.0,
+            [Register::hot(0).0, 8, 0, 0],
         );
         let result = interp.execute_alloc_tensor(alloc_instr);
         assert!(matches!(result, StepResult::Error(_)));
@@ -448,12 +431,9 @@ mod tests {
         let mut interp = Interpreter::new();
 
         // Try to free H5 which was never allocated
-        let free_instr = Instruction::new(
-            crate::vm::Action::FREE_TENSOR,
-            crate::vm::Register::hot(5),
-            crate::vm::Register::NULL,
-            0,
-            [0, 0, 0],
+        let free_instr = Instruction::core(
+            Action::FREE_TENSOR.0,
+            [Register::hot(5).0, 0, 0, 0],
         );
         let result = interp.execute_free_tensor(free_instr);
         assert!(matches!(result, StepResult::Error(_)));
@@ -488,12 +468,9 @@ mod tests {
         }
 
         // Wire forward: H1 = C0 @ H0
-        let wire_instr = Instruction::new(
-            crate::vm::Action::WIRE_FORWARD,
-            crate::vm::Register::hot(1),  // output
-            crate::vm::Register::cold(0), // weights
-            0,                             // input H0
-            [0, 0, 0],
+        let wire_instr = Instruction::core(
+            Action::WIRE_FORWARD.0,
+            [Register::hot(1).0, Register::cold(0).0, 0, 0], // target=H1, source=C0, aux=H0(idx 0)
         );
         let result = interp.execute_wire_forward(wire_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -501,7 +478,6 @@ mod tests {
         // Check output has values
         let h1 = interp.hot_reg(1).unwrap();
         assert_eq!(h1.shape, vec![4]);
-        // Values should be non-zero since we set up weights and input
     }
 
     #[test]
@@ -528,12 +504,9 @@ mod tests {
         }
 
         // Wire skip: H2 = H0 + H1
-        let wire_instr = Instruction::new(
-            crate::vm::Action::WIRE_SKIP,
-            crate::vm::Register::hot(2), // output
-            crate::vm::Register::hot(0), // input1
-            1,                            // input2 H1
-            [0, 0, 0],
+        let wire_instr = Instruction::core(
+            Action::WIRE_SKIP.0,
+            [Register::hot(2).0, Register::hot(0).0, 1, 0], // target=H2, source=H0, aux=1 (H1)
         );
         let result = interp.execute_wire_skip(wire_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -561,12 +534,10 @@ mod tests {
         assert_eq!(interp.cold_reg(0).unwrap().weights.len(), 4);
 
         // Grow by 3 neurons
-        let grow_instr = Instruction::new(
-            Action::GROW_NEURON,
-            Register::cold(0),
-            Register::NULL,
-            3, // add 3 neurons
-            [42, 0, 0], // seed
+        // TVMR format: [target, aux(neurons_to_add), seed_hi, seed_lo]
+        let grow_instr = Instruction::core(
+            Action::GROW_NEURON.0,
+            [Register::cold(0).0, 0xFF, 3, 42], // target=C0, unused, aux=3, modifier[0]=42
         );
         let result = interp.execute_grow_neuron(grow_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -593,13 +564,10 @@ mod tests {
         assert_eq!(interp.cold_reg(0).unwrap().shape, vec![4, 2]);
         assert_eq!(interp.cold_reg(0).unwrap().weights.len(), 8);
 
-        // Grow by 2 neurons (output dimension)
-        let grow_instr = Instruction::new(
-            Action::GROW_NEURON,
-            Register::cold(0),
-            Register::NULL,
-            2, // add 2 output neurons
-            [123, 0, 0], // seed
+        // Grow by 2 neurons
+        let grow_instr = Instruction::core(
+            Action::GROW_NEURON.0,
+            [Register::cold(0).0, 0xFF, 2, 123], // target=C0, unused, aux=2, modifier[0]=123
         );
         let result = interp.execute_grow_neuron(grow_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -631,12 +599,9 @@ mod tests {
         }
 
         // Prune index 2 (value 30)
-        let prune_instr = Instruction::new(
-            Action::PRUNE_NEURON,
-            Register::cold(0),
-            Register::NULL,
-            2, // remove index 2
-            [0, 0, 0],
+        let prune_instr = Instruction::core(
+            Action::PRUNE_NEURON.0,
+            [Register::cold(0).0, 0xFF, 2, 0], // target=C0, unused, aux=2
         );
         let result = interp.execute_prune_neuron(prune_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -669,12 +634,9 @@ mod tests {
         assert_eq!(interp.cold_reg(0).unwrap().weights.len(), 6);
 
         // Prune neuron 1 (second row)
-        let prune_instr = Instruction::new(
-            Action::PRUNE_NEURON,
-            Register::cold(0),
-            Register::NULL,
-            1, // remove row 1
-            [0, 0, 0],
+        let prune_instr = Instruction::core(
+            Action::PRUNE_NEURON.0,
+            [Register::cold(0).0, 0xFF, 1, 0], // target=C0, unused, aux=1
         );
         let result = interp.execute_prune_neuron(prune_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -698,12 +660,9 @@ mod tests {
         let mut interp = Interpreter::from_program(&program);
 
         // Try to prune the only neuron - should error
-        let prune_instr = Instruction::new(
-            Action::PRUNE_NEURON,
-            Register::cold(0),
-            Register::NULL,
-            0,
-            [0, 0, 0],
+        let prune_instr = Instruction::core(
+            Action::PRUNE_NEURON.0,
+            [Register::cold(0).0, 0xFF, 0, 0],
         );
         let result = interp.execute_prune_neuron(prune_instr);
         assert!(matches!(result, StepResult::Error(_)));
@@ -727,12 +686,10 @@ mod tests {
         assert!(initial.iter().all(|&m| m == 0));
 
         // Initialize with random
-        let init_instr = Instruction::new(
-            Action::INIT_RANDOM,
-            Register::cold(0),
-            Register::NULL,
-            0,
-            [42, 1, 2], // seed
+        // TVMR format: [target, unused, unused, seed_byte]
+        let init_instr = Instruction::core(
+            Action::INIT_RANDOM.0,
+            [Register::cold(0).0, 0xFF, 0, 42], // target=C0, modifier[0]=42 (seed)
         );
         let result = interp.execute_init_random(init_instr);
         assert!(matches!(result, StepResult::Continue));
@@ -756,12 +713,10 @@ mod tests {
         let mut interp = Interpreter::from_program(&program);
 
         // Try to grow by 0 - should error
-        let grow_instr = Instruction::new(
-            Action::GROW_NEURON,
-            Register::cold(0),
-            Register::NULL,
-            0, // zero neurons
-            [0, 0, 0],
+        // aux=0 means 0 neurons
+        let grow_instr = Instruction::core(
+            Action::GROW_NEURON.0,
+            [Register::cold(0).0, 0xFF, 0, 0],
         );
         let result = interp.execute_grow_neuron(grow_instr);
         assert!(matches!(result, StepResult::Error(_)));

@@ -9,11 +9,14 @@ keywords = ["ternary", "neural", "learning", "cognitive", "cpu"]
 categories = ["science", "simulation"]
 
 [dependencies]
+# Signal type (canonical, published as ternary-signal on crates.io)
+ternary-signal = "0.1"
+
 # Card format
 datacard-rs = { path = "../datacard-rs" }
 
 # Persistence
-thermogram = "0.5"
+thermogram = { path = "../thermogram-rs" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

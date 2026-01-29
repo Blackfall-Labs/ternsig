@@ -14,9 +14,9 @@ impl Interpreter {
     /// - Dormant paths need strong signals to activate
     /// - Old memories can still be reached with sufficient intensity
     pub(super) fn execute_ternary_matmul(&mut self, instr: Instruction) -> StepResult {
-        let weights_idx = instr.source.index();
-        let input_idx = instr.aux as usize & 0x0F;
-        let output_idx = instr.target.index();
+        let weights_idx = instr.source().index();
+        let input_idx = instr.aux() as usize & 0x0F;
+        let output_idx = instr.target().index();
 
         let weights = match &self.cold_regs[weights_idx] {
             Some(buf) => buf,
@@ -84,11 +84,11 @@ impl Interpreter {
     }
 
     pub(super) fn execute_add(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let other_idx = instr.aux as usize & 0x0F;
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let other_idx = instr.aux() as usize & 0x0F;
+        let dst_idx = instr.target().index();
 
-        if instr.source.is_hot() && Register(instr.aux).is_cold() {
+        if instr.source().is_hot() && Register(instr.aux()).is_cold() {
             let src = match &self.hot_regs[src_idx] {
                 Some(buf) => buf.clone(),
                 None => return StepResult::Error("Source not allocated".to_string()),
@@ -112,7 +112,7 @@ impl Interpreter {
                 data: result,
                 shape: src.shape.clone(),
             });
-        } else if instr.source.is_hot() && Register(instr.aux).is_hot() {
+        } else if instr.source().is_hot() && Register(instr.aux()).is_hot() {
             let src = match &self.hot_regs[src_idx] {
                 Some(buf) => buf.clone(),
                 None => return StepResult::Error("Source not allocated".to_string()),
@@ -140,9 +140,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_sub(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let other_idx = instr.aux as usize & 0x0F;
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let other_idx = instr.aux() as usize & 0x0F;
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -170,9 +170,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_mul(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let other_idx = instr.aux as usize & 0x0F;
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let other_idx = instr.aux() as usize & 0x0F;
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -200,8 +200,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_relu(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -219,10 +219,10 @@ impl Interpreter {
     }
 
     pub(super) fn execute_sigmoid(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
-        let gain = if instr.modifier[0] > 0 {
-            instr.modifier[0] as i32
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
+        let gain = if instr.modifier()[0] > 0 {
+            instr.modifier()[0] as i32
         } else {
             64
         };
@@ -250,8 +250,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_gelu(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -278,8 +278,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_tanh(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -313,8 +313,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_softmax(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -356,9 +356,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_shift(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
-        let shift_amount = instr.aux as u32;
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
+        let shift_amount = instr.aux() as u32;
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -376,9 +376,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_cmp_gt(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let other_idx = instr.aux as usize & 0x0F;
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let other_idx = instr.aux() as usize & 0x0F;
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -406,8 +406,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_max_reduce(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -424,6 +424,36 @@ impl Interpreter {
         StepResult::Continue
     }
 
+    /// Clamp values to [min, max] range
+    ///
+    /// Format: clamp target, source, min, max
+    /// - aux = min value
+    /// - modifier[0] = max value
+    pub(super) fn execute_clamp(&mut self, instr: Instruction) -> StepResult {
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
+        let min_val = instr.aux() as i32;
+        let max_val = instr.modifier()[0] as i32;
+
+        let src = match &self.hot_regs[src_idx] {
+            Some(buf) => buf.clone(),
+            None => return StepResult::Error("Source not allocated".to_string()),
+        };
+
+        let clamped: Vec<i32> = src
+            .data
+            .iter()
+            .map(|&v| v.clamp(min_val, max_val))
+            .collect();
+
+        self.hot_regs[dst_idx] = Some(HotBuffer {
+            data: clamped,
+            shape: src.shape.clone(),
+        });
+
+        StepResult::Continue
+    }
+
     /// Temperature-gated batch matrix multiply
     ///
     /// Applies same weight matrix to each row of input batch with temperature gating.
@@ -431,9 +461,9 @@ impl Interpreter {
     /// Weights shape: [out_dim, in_dim]
     /// Output shape: [batch_size, out_dim]
     pub(super) fn execute_ternary_batch_matmul(&mut self, instr: Instruction) -> StepResult {
-        let weights_idx = instr.source.index();
-        let input_idx = instr.aux as usize & 0x0F;
-        let output_idx = instr.target.index();
+        let weights_idx = instr.source().index();
+        let input_idx = instr.aux() as usize & 0x0F;
+        let output_idx = instr.target().index();
 
         let weights = match &self.cold_regs[weights_idx] {
             Some(buf) => buf,

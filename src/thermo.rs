@@ -1,113 +1,18 @@
 //! Thermogram Bridge for Ternsig VM
 //!
 //! Provides persistence for cold registers (Signal weights) via Thermogram.
-//! Weights are stored with thermal state tracking (hot/warm/cold/frozen) and
-//! survive restarts.
+//! Weights are stored as `Vec<Signal>` directly — no JSON serialization.
 //!
 //! ## Features
 //!
 //! - All cognitive state persists through crashes via Thermogram
-//! - Weights stored as Signal (polarity + magnitude)
+//! - Weights stored as Signal (polarity + magnitude), 2 bytes each
 //! - Temperature lifecycle: HOT → WARM → COOL → COLD
 
 use crate::vm::{ColdBuffer, Interpreter};
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use crate::Signal;
 use thermogram::{Delta, PlasticityRule, ThermalConfig, Thermogram};
-
-/// Content types stored in TensorThermogram
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum TensorContent {
-    /// Weight matrix for a layer
-    Weights(WeightContent),
-    /// Program metadata
-    ProgramMeta(ProgramMetaContent),
-    /// Learning state (eligibility, etc.)
-    LearningState(LearningStateContent),
-}
-
-impl TensorContent {
-    pub fn key(&self) -> String {
-        match self {
-            TensorContent::Weights(w) => w.key.clone(),
-            TensorContent::ProgramMeta(p) => format!("program.{}", p.name),
-            TensorContent::LearningState(l) => format!("learning.{}", l.layer),
-        }
-    }
-}
-
-/// Weight matrix content
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WeightContent {
-    /// Thermogram key (e.g., "chip.audio.layer1.weights")
-    pub key: String,
-    /// Shape of weight matrix
-    pub shape: Vec<usize>,
-    /// Polarities as i8 (-1, 0, +1)
-    pub polarities: Vec<i8>,
-    /// Magnitudes as u8 (0-255)
-    pub magnitudes: Vec<u8>,
-}
-
-impl WeightContent {
-    /// Create from ColdBuffer
-    pub fn from_cold_buffer(key: &str, buffer: &ColdBuffer) -> Self {
-        let polarities: Vec<i8> = buffer.weights.iter().map(|w| w.polarity).collect();
-        let magnitudes: Vec<u8> = buffer.weights.iter().map(|w| w.magnitude).collect();
-
-        Self {
-            key: key.to_string(),
-            shape: buffer.shape.clone(),
-            polarities,
-            magnitudes,
-        }
-    }
-
-    /// Convert to Signal array
-    pub fn to_ternary_signals(&self) -> Vec<Signal> {
-        self.polarities
-            .iter()
-            .zip(self.magnitudes.iter())
-            .map(|(&p, &m)| Signal {
-                polarity: p,
-                magnitude: m,
-            })
-            .collect()
-    }
-}
-
-/// Program metadata content
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProgramMetaContent {
-    pub name: String,
-    pub version: u32,
-    pub checksum: u64,
-    pub register_count: usize,
-    pub instruction_count: usize,
-}
-
-/// Learning state content
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LearningStateContent {
-    pub layer: usize,
-    pub eligibility_traces: Vec<f32>,
-    pub update_count: u64,
-    pub last_error: f32,
-}
-
-/// Thermal state for weight entries
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThermalState {
-    /// Just added, volatile (10%/tick decay)
-    Hot,
-    /// Confirmed, session-level (1%/tick decay)
-    Warm,
-    /// Consolidated, crystallized (0.1%/tick decay)
-    Cool,
-    /// Permanent, constitutional (0.01%/tick decay)
-    Cold,
-}
 
 /// Thermogram bridge for TensorISA weight persistence
 pub struct TensorThermogram {
@@ -127,9 +32,24 @@ impl TensorThermogram {
 
         // Thermal config optimized for neural network weights
         let thermal_config = ThermalConfig {
-            decay_rates: [0.10, 0.01, 0.001, 0.0001], // Hot→Warm→Cool→Cold
-            promotion_thresholds: [0.5, 0.7, 0.85, 1.0],
-            demotion_thresholds: [0.0, 0.2, 0.3, 0.4],
+            decay_rates: [
+                Signal::positive(26),  // Hot: ~0.10
+                Signal::positive(3),   // Warm: ~0.01
+                Signal::positive(1),   // Cool: ~0.001 (min non-zero)
+                Signal::positive(1),   // Cold: ~0.0001 (min non-zero)
+            ],
+            promotion_thresholds: [
+                Signal::positive(128), // 0.5
+                Signal::positive(179), // 0.7
+                Signal::positive(217), // 0.85
+                Signal::positive(255), // 1.0
+            ],
+            demotion_thresholds: [
+                Signal::zero(),        // 0.0
+                Signal::positive(51),  // 0.2
+                Signal::positive(77),  // 0.3
+                Signal::positive(102), // 0.4
+            ],
             min_observations: [5, 20, 100, usize::MAX],
             allow_demotion: [false, true, true, false],
             ..Default::default()
@@ -165,34 +85,29 @@ impl TensorThermogram {
     }
 
     /// Load a cold register's weights from stored content
-    pub fn load_weights(&self, key: &str) -> Result<Option<WeightContent>> {
+    ///
+    /// Returns the stored signals directly (no deserialization needed).
+    pub fn load_weights(&self, key: &str) -> Result<Option<Vec<Signal>>> {
         match self.substrate.read(key) {
-            Ok(Some(data)) => {
-                let content: TensorContent = serde_json::from_slice(&data)
-                    .context("Failed to deserialize weight content")?;
-                match content {
-                    TensorContent::Weights(w) => Ok(Some(w)),
-                    _ => Ok(None),
-                }
-            }
-            Ok(None) => Ok(None),
+            Ok(signals) => Ok(signals),
             Err(e) => Err(anyhow::anyhow!("Thermogram read error: {:?}", e)),
         }
     }
 
     /// Store a cold register's weights
+    ///
+    /// Stores the weight signals directly into the thermogram entry.
     pub fn store_weights(
         &mut self,
         key: &str,
         buffer: &ColdBuffer,
-        strength: f32,
+        strength: Signal,
     ) -> Result<()> {
-        let content = TensorContent::Weights(WeightContent::from_cold_buffer(key, buffer));
-        let data = serde_json::to_vec(&content).context("Failed to serialize weight content")?;
+        let signals: Vec<Signal> = buffer.weights.clone();
 
         let prev_hash = self.substrate.dirty_chain.head_hash.clone();
-        let mut delta = Delta::update(key, data, "tensor_isa", strength, prev_hash);
-        delta.metadata.strength = strength.clamp(0.0, 1.0);
+        let mut delta = Delta::update(key, signals, "tensor_isa", strength, prev_hash);
+        delta.metadata.strength = strength;
 
         self.substrate
             .apply_delta(delta)
@@ -209,20 +124,19 @@ impl TensorThermogram {
         for i in 0..16 {
             if let Some(buffer) = interpreter.cold_reg_mut(i) {
                 if let Some(key) = &buffer.thermogram_key.clone() {
-                    if let Some(weights) = self.load_weights(key)? {
+                    if let Some(signals) = self.load_weights(key)? {
                         // Verify shape matches
                         let expected_size: usize = buffer.shape.iter().product();
-                        let stored_size: usize = weights.shape.iter().product();
 
-                        if expected_size == stored_size {
-                            buffer.weights = weights.to_ternary_signals();
+                        if expected_size == signals.len() {
+                            buffer.weights = signals;
                             loaded += 1;
                         } else {
                             log::warn!(
                                 "Shape mismatch for {}: expected {}, got {}",
                                 key,
                                 expected_size,
-                                stored_size
+                                signals.len()
                             );
                         }
                     }
@@ -237,7 +151,7 @@ impl TensorThermogram {
     pub fn store_interpreter_weights(
         &mut self,
         interpreter: &Interpreter,
-        strength: f32,
+        strength: Signal,
     ) -> Result<usize> {
         let mut stored = 0;
 
@@ -308,28 +222,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_weight_content_roundtrip() {
-        let mut buffer = ColdBuffer::new(vec![3]);
-        buffer.weights[0] = Signal { polarity: 1, magnitude: 128 };
-        buffer.weights[1] = Signal { polarity: -1, magnitude: 64 };
-        buffer.weights[2] = Signal { polarity: 0, magnitude: 0 };
-        buffer.thermogram_key = Some("test.weights".to_string());
-
-        let content = WeightContent::from_cold_buffer("test.weights", &buffer);
-        let recovered = content.to_ternary_signals();
-
-        assert_eq!(recovered.len(), 3);
-        assert_eq!(recovered[0].polarity, 1);
-        assert_eq!(recovered[0].magnitude, 128);
-        assert_eq!(recovered[1].polarity, -1);
-        assert_eq!(recovered[1].magnitude, 64);
-        assert_eq!(recovered[2].polarity, 0);
-    }
-
-    #[test]
     fn test_tensor_thermogram_creation() {
         let thermo = TensorThermogram::new("test_tensor");
         assert_eq!(thermo.tick(), 0);
         assert!(!thermo.is_dirty());
+    }
+
+    #[test]
+    fn test_store_load_weights() {
+        let mut thermo = TensorThermogram::new("test_store_load");
+
+        let mut buffer = ColdBuffer::new(vec![3]);
+        buffer.weights[0] = Signal::positive(128);
+        buffer.weights[1] = Signal::negative(64);
+        buffer.weights[2] = Signal::zero();
+        buffer.thermogram_key = Some("test.weights".to_string());
+
+        // Store
+        thermo
+            .store_weights("test.weights", &buffer, Signal::positive(200))
+            .unwrap();
+
+        // Consolidate so read can find it
+        thermo.consolidate().unwrap();
+
+        // Load
+        let loaded = thermo.load_weights("test.weights").unwrap();
+        assert!(loaded.is_some());
+        let signals = loaded.unwrap();
+        assert_eq!(signals.len(), 3);
+        assert_eq!(signals[0].polarity, 1);
+        assert_eq!(signals[0].magnitude, 128);
+        assert_eq!(signals[1].polarity, -1);
+        assert_eq!(signals[1].magnitude, 64);
+        assert_eq!(signals[2].polarity, 0);
     }
 }

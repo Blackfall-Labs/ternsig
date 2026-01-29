@@ -4,9 +4,9 @@ use super::{HotBuffer, Instruction, Interpreter, StepResult};
 
 impl Interpreter {
     pub(super) fn execute_ternary_add_bias(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let bias_idx = instr.aux as usize & 0x0F;
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let bias_idx = instr.aux() as usize & 0x0F;
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -36,9 +36,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_embed_lookup(&mut self, instr: Instruction) -> StepResult {
-        let table_idx = instr.source.index();
-        let indices_idx = instr.aux as usize & 0x0F;
-        let output_idx = instr.target.index();
+        let table_idx = instr.source().index();
+        let indices_idx = instr.aux() as usize & 0x0F;
+        let output_idx = instr.target().index();
 
         let table = match &self.cold_regs[table_idx] {
             Some(buf) => buf,
@@ -83,9 +83,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_embed_sequence(&mut self, instr: Instruction) -> StepResult {
-        let table_idx = instr.source.index();
-        let count = instr.aux as usize;
-        let output_idx = instr.target.index();
+        let table_idx = instr.source().index();
+        let count = instr.aux() as usize;
+        let output_idx = instr.target().index();
 
         let table = match &self.cold_regs[table_idx] {
             Some(buf) => buf,
@@ -123,9 +123,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_reduce_mean_dim(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
-        let dim = instr.aux as usize;
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
+        let dim = instr.aux() as usize;
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf,
@@ -193,10 +193,10 @@ impl Interpreter {
     }
 
     pub(super) fn execute_reduce_avg(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
-        let start = instr.aux as usize;
-        let count = instr.modifier[0] as usize;
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
+        let start = instr.aux() as usize;
+        let count = instr.modifier()[0] as usize;
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => &buf.data,
@@ -233,10 +233,10 @@ impl Interpreter {
     }
 
     pub(super) fn execute_slice(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
-        let start = instr.aux as usize;
-        let len = instr.modifier[0] as usize;
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
+        let start = instr.aux() as usize;
+        let len = instr.modifier()[0] as usize;
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => &buf.data,
@@ -256,8 +256,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_argmax(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => &buf.data,
@@ -280,9 +280,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_concat(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let other_idx = instr.aux as usize & 0x0F;
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let other_idx = instr.aux() as usize & 0x0F;
+        let dst_idx = instr.target().index();
 
         let src = match &self.hot_regs[src_idx] {
             Some(buf) => buf.clone(),
@@ -307,8 +307,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_squeeze(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         if let Some(buf) = self.hot_regs[src_idx].clone() {
             self.hot_regs[dst_idx] = Some(buf);
@@ -318,8 +318,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_unsqueeze(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         if let Some(buf) = self.hot_regs[src_idx].clone() {
             self.hot_regs[dst_idx] = Some(buf);
@@ -329,8 +329,8 @@ impl Interpreter {
     }
 
     pub(super) fn execute_transpose(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
-        let dst_idx = instr.target.index();
+        let src_idx = instr.source().index();
+        let dst_idx = instr.target().index();
 
         if let Some(buf) = self.hot_regs[src_idx].clone() {
             self.hot_regs[dst_idx] = Some(buf);
@@ -340,10 +340,10 @@ impl Interpreter {
     }
 
     pub(super) fn execute_gate_update(&mut self, instr: Instruction) -> StepResult {
-        let gate_idx = instr.source.index();
-        let update_idx = instr.aux as usize & 0x0F;
-        let state_idx = instr.modifier[0] as usize & 0x0F;
-        let dst_idx = instr.target.index();
+        let gate_idx = instr.source().index();
+        let update_idx = instr.aux() as usize & 0x0F;
+        let state_idx = instr.modifier()[0] as usize & 0x0F;
+        let dst_idx = instr.target().index();
 
         let gate = match &self.hot_regs[gate_idx] {
             Some(buf) => &buf.data,
@@ -380,7 +380,7 @@ impl Interpreter {
     }
 
     pub(super) fn execute_dequantize(&mut self, instr: Instruction) -> StepResult {
-        let src_idx = instr.source.index();
+        let src_idx = instr.source().index();
         let shift = instr.scale() as u32;
 
         let src = match &self.hot_regs[src_idx] {

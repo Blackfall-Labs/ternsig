@@ -54,19 +54,24 @@
 mod action;
 mod assembler;
 mod binary;
+pub mod extension;
+pub mod extensions;
 mod hot_reload;
 mod instruction;
 mod interpreter;
 mod modifier;
 mod register;
+pub mod registry;
 mod runtime_mod;
+pub mod types;
+pub mod validator;
 
 // New names (primary exports)
 pub use action::Action;
-pub use assembler::{assemble, AssembledProgram, AssemblerError, Assembler};
+pub use assembler::{assemble, AssembledProgram, AssemblerError, Assembler, RequiredExtension};
 pub use binary::{
     deserialize, load_from_file, save_to_file, serialize,
-    BinaryFlags, Header, HEADER_SIZE,
+    BinaryFlags, Header, HEADER_SIZE, LEGACY_HEADER_SIZE, TVMR_HEADER_SIZE,
 };
 pub use instruction::{Instruction, InstructionBuilder};
 pub use interpreter::{ColdBuffer, DomainOp, HotBuffer, StepResult, Interpreter, SignalTemperature, ChemicalState};
@@ -80,14 +85,26 @@ pub use runtime_mod::{ArchStats, ModEvent, ShapeSpec, WireSpec, WireType};
 // Re-export Signal for users of ColdBuffer
 pub use crate::Signal;
 
+// TVMR extension system exports
+pub use extension::{Extension, ExecutionContext, InstructionMeta, OperandPattern, LoopState as ExtLoopState};
+pub use registry::ExtensionRegistry;
+pub use types::TypeId;
+pub use validator::{ProgramValidator, Diagnostic, DiagnosticLevel};
+
 /// Instruction size in bytes
 pub const INSTRUCTION_SIZE: usize = 8;
 
-/// Magic bytes for .ternsig binary format
+/// Magic bytes for .ternsig binary format (legacy)
 pub const TERNSIG_MAGIC: [u8; 4] = [0x54, 0x45, 0x52, 0x4E]; // "TERN"
 
+/// Magic bytes for TVMR binary format
+pub const TVMR_MAGIC: [u8; 4] = [0x54, 0x56, 0x4D, 0x52]; // "TVMR"
+
 /// Current version of the binary format
-pub const TERNSIG_VERSION: u16 = 0x0002; // Bumped for rename
+pub const TERNSIG_VERSION: u16 = 0x0002; // Legacy
+
+/// TVMR format version
+pub const TVMR_VERSION: u16 = 0x0001;
 
 // =============================================================================
 // Legacy type aliases for backwards compatibility (all deprecated)
@@ -136,21 +153,17 @@ mod tests {
 
     #[test]
     fn test_instruction_roundtrip() {
-        let instr = Instruction::new(
-            Action::TERNARY_MATMUL,
+        let instr = Instruction::ternary_matmul(
             Register::hot(1),
             Register::cold(0),
-            Register::hot(0).0,
-            [0, 0, 0],
+            Register::hot(0),
         );
 
         let bytes = instr.to_bytes();
         assert_eq!(bytes.len(), INSTRUCTION_SIZE);
 
         let parsed = Instruction::from_bytes(&bytes);
-        assert_eq!(instr.action, parsed.action);
-        assert_eq!(instr.target, parsed.target);
-        assert_eq!(instr.source, parsed.source);
+        assert_eq!(instr, parsed);
     }
 
     #[test]

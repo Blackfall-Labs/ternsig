@@ -35,27 +35,27 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use crate::vm::{AssembledProgram, deserialize, assemble, serialize, TERNSIG_MAGIC};
+use crate::vm::{AssembledProgram, deserialize, assemble, serialize, TVMR_MAGIC, TERNSIG_MAGIC};
 use datacard_rs::{CardFormat, GenericCard, CardError};
 
 // =============================================================================
 // Ternsig Card Format
 // =============================================================================
 
-/// Ternsig card format - defines TERN magic and validation
+/// Ternsig card format - defines TVMR magic and validation
 pub struct TernsigFormat;
 
 impl CardFormat for TernsigFormat {
-    /// "TERN" magic bytes
-    const MAGIC: [u8; 4] = TERNSIG_MAGIC;
+    /// "TVMR" magic bytes (updated from legacy "TERN")
+    const MAGIC: [u8; 4] = TVMR_MAGIC;
 
-    /// Current major version (from TERNSIG_VERSION 0x0002 = v0.2)
-    const VERSION_MAJOR: u8 = 0;
+    /// Current major version (TVMR v1)
+    const VERSION_MAJOR: u8 = 1;
 
     /// Minimum minor version
-    const VERSION_MINOR: u8 = 2;
+    const VERSION_MINOR: u8 = 0;
 
-    /// Validate payload contains valid ternsig program
+    /// Validate payload contains valid ternsig/TVMR program
     fn validate_payload(payload: &[u8]) -> datacard_rs::Result<()> {
         // Must have at least magic + version
         if payload.len() < 8 {
@@ -64,10 +64,11 @@ impl CardFormat for TernsigFormat {
             ));
         }
 
-        // Validate internal TERN magic
-        if &payload[0..4] != &TERNSIG_MAGIC {
+        // Accept both TVMR and legacy TERN magic
+        let magic = &payload[0..4];
+        if magic != &TVMR_MAGIC && magic != &TERNSIG_MAGIC {
             return Err(CardError::InvalidFormat(
-                format!("Invalid ternsig magic in payload: {:?}", &payload[0..4])
+                format!("Invalid magic in payload: {:?}", magic)
             ));
         }
 
@@ -75,7 +76,7 @@ impl CardFormat for TernsigFormat {
     }
 
     fn format_name() -> &'static str {
-        "Ternsig"
+        "TVMR"
     }
 }
 

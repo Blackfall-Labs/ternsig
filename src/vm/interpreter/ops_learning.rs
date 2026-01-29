@@ -4,7 +4,7 @@ use super::{HotBuffer, Instruction, Interpreter, StepResult};
 
 impl Interpreter {
     pub(super) fn execute_load_target(&mut self, instr: Instruction) -> StepResult {
-        let idx = instr.target.index();
+        let idx = instr.target().index();
 
         let data = self.target_buffer.clone();
         let len = data.len();
@@ -27,11 +27,11 @@ impl Interpreter {
             return StepResult::Continue; // No learning without dopamine
         }
 
-        let weights_idx = instr.target.index();
-        let activity_idx = instr.source.index();
-        let direction_idx = instr.aux as usize & 0x0F;
-        let base_scale = if instr.modifier[0] > 0 { instr.modifier[0] as i32 } else { 15 };
-        let threshold_div = if instr.modifier[1] > 0 { instr.modifier[1] as i32 } else { 4 };
+        let weights_idx = instr.target().index();
+        let activity_idx = instr.source().index();
+        let direction_idx = instr.aux() as usize & 0x0F;
+        let base_scale = if instr.modifier()[0] > 0 { instr.modifier()[0] as i32 } else { 15 };
+        let threshold_div = if instr.modifier()[1] > 0 { instr.modifier()[1] as i32 } else { 4 };
 
         // Scale by dopamine level (1-4x multiplier based on dopamine)
         let dopamine_scale = self.chemical_state.dopamine_scale();
@@ -75,9 +75,9 @@ impl Interpreter {
     }
 
     pub(super) fn execute_mastery_commit(&mut self, instr: Instruction) -> StepResult {
-        let weights_idx = instr.target.index();
-        let base_threshold = if instr.modifier[0] > 0 { instr.modifier[0] as i32 } else { 50 };
-        let mag_step = if instr.modifier[1] > 0 { instr.modifier[1] } else { 5 };
+        let weights_idx = instr.target().index();
+        let base_threshold = if instr.modifier()[0] > 0 { instr.modifier()[0] as i32 } else { 50 };
+        let mag_step = if instr.modifier()[1] > 0 { instr.modifier()[1] } else { 5 };
 
         let pressure = match &mut self.pressure_regs[weights_idx] {
             Some(p) => p,
@@ -144,7 +144,7 @@ impl Interpreter {
     }
 
     pub(super) fn execute_add_babble(&mut self, instr: Instruction) -> StepResult {
-        let idx = instr.target.index();
+        let idx = instr.target().index();
 
         if let Some(buf) = &mut self.hot_regs[idx] {
             let babble_base = self.babble_scale * 50;

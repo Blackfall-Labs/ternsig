@@ -21,10 +21,19 @@
 //! ```
 
 use super::{
-    RegisterMeta, Action, Dtype, Instruction, Modifier, Register,
+    RegisterMeta, Action, Dtype, Instruction, Register,
     INSTRUCTION_SIZE, TERNSIG_MAGIC, TERNSIG_VERSION,
 };
 use std::collections::HashMap;
+
+/// Required extension declaration (from .requires section)
+#[derive(Debug, Clone)]
+pub struct RequiredExtension {
+    /// Extension name (e.g. "ternary", "activation")
+    pub name: String,
+    /// Extension ID
+    pub ext_id: u16,
+}
 
 /// Assembled Ternsig program
 #[derive(Debug, Clone)]
@@ -35,6 +44,8 @@ pub struct AssembledProgram {
     pub version: u32,
     /// Domain category (from .meta, e.g. "fleet.classifier")
     pub domain: Option<String>,
+    /// Required extensions (from .requires section)
+    pub required_extensions: Vec<RequiredExtension>,
     /// Register definitions
     pub registers: Vec<RegisterMeta>,
     /// Compiled instructions
@@ -111,6 +122,8 @@ pub struct Assembler {
     labels: HashMap<String, usize>,
     /// Unresolved label references (instruction index, label name)
     unresolved_labels: Vec<(usize, String)>,
+    /// Required extensions (from .requires section)
+    required_extensions: Vec<RequiredExtension>,
     /// Meta: program name
     meta_name: Option<String>,
     /// Meta: program version
@@ -131,6 +144,7 @@ impl Assembler {
             instructions: Vec::new(),
             labels: HashMap::new(),
             unresolved_labels: Vec::new(),
+            required_extensions: Vec::new(),
             meta_name: None,
             meta_version: 1,
             meta_domain: None,
@@ -145,6 +159,7 @@ impl Assembler {
         self.instructions.clear();
         self.labels.clear();
         self.unresolved_labels.clear();
+        self.required_extensions.clear();
         self.meta_name = None;
         self.meta_version = 1;
         self.meta_domain = None;
@@ -152,6 +167,7 @@ impl Assembler {
         self.meta_output_dim = None;
 
         let mut in_meta = false;
+        let mut in_requires = false;
         let mut in_registers = false;
         let mut in_program = false;
         let mut in_skipped_section = false; // .aliases, .config - content ignored
@@ -181,6 +197,15 @@ impl Assembler {
                 match line.to_lowercase().as_str() {
                     ".meta" => {
                         in_meta = true;
+                        in_requires = false;
+                        in_registers = false;
+                        in_program = false;
+                        in_skipped_section = false;
+                        continue;
+                    }
+                    ".requires" => {
+                        in_meta = false;
+                        in_requires = true;
                         in_registers = false;
                         in_program = false;
                         in_skipped_section = false;
@@ -188,6 +213,7 @@ impl Assembler {
                     }
                     ".registers" => {
                         in_meta = false;
+                        in_requires = false;
                         in_registers = true;
                         in_program = false;
                         in_skipped_section = false;
@@ -195,6 +221,7 @@ impl Assembler {
                     }
                     ".program" | ".code" => {
                         in_meta = false;
+                        in_requires = false;
                         in_registers = false;
                         in_program = true;
                         in_skipped_section = false;
@@ -205,6 +232,7 @@ impl Assembler {
                         // We skip this section as aliases are syntactic sugar
                         // that the source files can resolve without us tracking them
                         in_meta = false;
+                        in_requires = false;
                         in_registers = false;
                         in_program = false;
                         in_skipped_section = true;
@@ -214,6 +242,7 @@ impl Assembler {
                         // Config section - additional configuration
                         // Skip for forward compatibility
                         in_meta = false;
+                        in_requires = false;
                         in_registers = false;
                         in_program = false;
                         in_skipped_section = true;
@@ -231,6 +260,8 @@ impl Assembler {
                 continue;
             } else if in_meta {
                 self.parse_meta(line)?;
+            } else if in_requires {
+                self.parse_requires(line)?;
             } else if in_registers {
                 self.parse_register(line)?;
             } else if in_program {
@@ -275,6 +306,7 @@ impl Assembler {
             name: self.meta_name.clone().unwrap_or_default(),
             version: self.meta_version,
             domain: self.meta_domain.clone(),
+            required_extensions: self.required_extensions.clone(),
             registers: self.registers.clone(),
             instructions: self.instructions.clone(),
             labels: self.labels.clone(),
@@ -331,6 +363,47 @@ impl Assembler {
                 log::debug!("Ignoring unknown .meta key: {}", key);
             }
         }
+
+        Ok(())
+    }
+
+    /// Parse a .requires section line
+    ///
+    /// Format: `extension_name  0xEXT_ID`
+    /// Example: `ternary    0x0002`
+    fn parse_requires(&mut self, line: &str) -> Result<(), AssemblerError> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() {
+            return Ok(());
+        }
+
+        let name = parts[0].to_lowercase();
+
+        // Parse explicit ext_id if provided, otherwise resolve from name
+        let ext_id = if let Some(id_str) = parts.get(1) {
+            if id_str.starts_with("0x") || id_str.starts_with("0X") {
+                u16::from_str_radix(&id_str[2..], 16)
+                    .map_err(|_| self.error(format!("Invalid extension ID: {}", id_str)))?
+            } else {
+                id_str
+                    .parse::<u16>()
+                    .map_err(|_| self.error(format!("Invalid extension ID: {}", id_str)))?
+            }
+        } else {
+            // Resolve from standard extension names
+            super::extensions::resolve_ext_name(&name)
+                .ok_or_else(|| self.error(format!("Unknown extension: {}", name)))?
+        };
+
+        // Check for duplicate
+        if self.required_extensions.iter().any(|r| r.ext_id == ext_id) {
+            return Err(self.error(format!("Duplicate extension requirement: {}", name)));
+        }
+
+        self.required_extensions.push(RequiredExtension {
+            name,
+            ext_id,
+        });
 
         Ok(())
     }
@@ -463,22 +536,16 @@ impl Assembler {
             "copy_reg" | "copy" | "mov" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(Instruction::new(
-                    Action::COPY_REG,
-                    target,
-                    source,
-                    0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::COPY_REG.0,
+                    [target.0, source.0, 0, 0],
                 ))
             }
             "zero_reg" | "zero" => {
                 let target = self.parse_register_operand(ops.get(0))?;
-                Ok(Instruction::new(
-                    Action::ZERO_REG,
-                    target,
-                    Register::NULL,
-                    0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::ZERO_REG.0,
+                    [target.0, Register::NULL.0, 0, 0],
                 ))
             }
 
@@ -505,24 +572,18 @@ impl Assembler {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(Instruction::new(
-                    Action::SUB,
-                    target,
-                    source,
-                    other.0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::SUB.0,
+                    [target.0, source.0, other.0, 0],
                 ))
             }
             "mul" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(Instruction::new(
-                    Action::MUL,
-                    target,
-                    source,
-                    other.0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::MUL.0,
+                    [target.0, source.0, other.0, 0],
                 ))
             }
             "relu" => {
@@ -535,45 +596,33 @@ impl Assembler {
                 let source = self.parse_register_operand(ops.get(1))?;
                 // Parse optional gain=X.X parameter
                 let gain = self.parse_gain_param(ops.get(2)).unwrap_or(64); // 4.0 * 16 = 64
-                Ok(Instruction::new(
-                    Action::SIGMOID,
-                    target,
-                    source,
-                    0,
-                    [gain, 0, 0],
+                Ok(Instruction::core(
+                    Action::SIGMOID.0,
+                    [target.0, source.0, 0, gain],
                 ))
             }
             "gelu" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(Instruction::new(
-                    Action::GELU,
-                    target,
-                    source,
-                    0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::GELU.0,
+                    [target.0, source.0, 0, 0],
                 ))
             }
             "tanh" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(Instruction::new(
-                    Action::TANH,
-                    target,
-                    source,
-                    0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::TANH.0,
+                    [target.0, source.0, 0, 0],
                 ))
             }
             "softmax" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(Instruction::new(
-                    Action::SOFTMAX,
-                    target,
-                    source,
-                    0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::SOFTMAX.0,
+                    [target.0, source.0, 0, 0],
                 ))
             }
             "shift" => {
@@ -586,23 +635,28 @@ impl Assembler {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let other = self.parse_register_operand(ops.get(2))?;
-                Ok(Instruction::new(
-                    Action::CMP_GT,
-                    target,
-                    source,
-                    other.0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::CMP_GT.0,
+                    [target.0, source.0, other.0, 0],
                 ))
             }
             "max_reduce" => {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
-                Ok(Instruction::new(
-                    Action::MAX_REDUCE,
-                    target,
-                    source,
-                    0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::MAX_REDUCE.0,
+                    [target.0, source.0, 0, 0],
+                ))
+            }
+            "clamp" => {
+                // clamp target, source, min, max
+                let target = self.parse_register_operand(ops.get(0))?;
+                let source = self.parse_register_operand(ops.get(1))?;
+                let min_val = self.parse_immediate(ops.get(2))? as u8;
+                let max_val = self.parse_immediate(ops.get(3))? as u8;
+                Ok(Instruction::core(
+                    Action::CLAMP.0,
+                    [target.0, source.0, min_val, max_val],
                 ))
             }
 
@@ -620,12 +674,9 @@ impl Assembler {
             }
             "load_target" => {
                 let target = self.parse_register_operand(ops.get(0))?;
-                Ok(Instruction::new(
-                    Action::LOAD_TARGET,
-                    target,
-                    Register::NULL,
-                    0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::LOAD_TARGET.0,
+                    [target.0, Register::NULL.0, 0, 0],
                 ))
             }
             "mastery_update" => {
@@ -634,26 +685,25 @@ impl Assembler {
                 let activity = self.parse_register_operand(ops.get(1))?;
                 let direction = self.parse_register_operand(ops.get(2))?;
                 let scale = self.parse_param_or_default(ops.get(3), "scale", 15)?;
-                let threshold_div = self.parse_param_or_default(ops.get(4), "threshold_div", 4)?;
-                Ok(Instruction::new(
-                    Action::MASTERY_UPDATE,
-                    weights,
-                    activity,
-                    direction.0,
-                    [scale, threshold_div, 0],
+                let _threshold_div = self.parse_param_or_default(ops.get(4), "threshold_div", 4)?;
+                // Note: threshold_div encoded in aux position (operands[2] high bits)
+                // but legacy bridge only preserves operands[3] as modifier[0].
+                // For now, scale goes to operands[3] (modifier[0]), threshold_div
+                // falls back to default (4) via the legacy bridge.
+                Ok(Instruction::core(
+                    Action::MASTERY_UPDATE.0,
+                    [weights.0, activity.0, direction.0, scale],
                 ))
             }
             "mastery_commit" => {
                 // mastery_commit weights [, threshold=50, step=5]
                 let weights = self.parse_register_operand(ops.get(0))?;
                 let threshold = self.parse_param_or_default(ops.get(1), "threshold", 50)?;
-                let step = self.parse_param_or_default(ops.get(2), "step", 5)?;
-                Ok(Instruction::new(
-                    Action::MASTERY_COMMIT,
-                    weights,
-                    Register::NULL,
-                    0,
-                    [threshold, step, 0],
+                let _step = self.parse_param_or_default(ops.get(2), "step", 5)?;
+                // Note: step falls back to default (5) via legacy bridge.
+                Ok(Instruction::core(
+                    Action::MASTERY_COMMIT.0,
+                    [weights.0, Register::NULL.0, 0, threshold],
                 ))
             }
 
@@ -672,12 +722,9 @@ impl Assembler {
                 let target = self.parse_register_operand(ops.get(0))?;
                 let source = self.parse_register_operand(ops.get(1))?;
                 let bias = self.parse_register_operand(ops.get(2))?;
-                Ok(Instruction::new(
-                    Action::TERNARY_ADD_BIAS,
-                    target,
-                    source,
-                    bias.0,
-                    [0, 0, 0],
+                Ok(Instruction::core(
+                    Action::TERNARY_ADD_BIAS.0,
+                    [target.0, source.0, bias.0, 0],
                 ))
             }
             "embed_lookup" => {
@@ -769,8 +816,45 @@ impl Assembler {
             "end_loop" => Ok(Instruction::end_loop()),
             "break" => Ok(Instruction::break_loop()),
 
-            _ => Err(self.error(format!("Unknown mnemonic: {}", mnemonic))),
+            _ => {
+                // Try extension-qualified mnemonic: ext.MNEMONIC
+                if let Some(dot_pos) = mnemonic.find('.') {
+                    let ext_name = &mnemonic[..dot_pos];
+                    let ext_mnemonic = &mnemonic[dot_pos + 1..];
+                    self.build_ext_instruction(ext_name, ext_mnemonic, ops)
+                } else {
+                    Err(self.error(format!("Unknown mnemonic: {}", mnemonic)))
+                }
+            }
         }
+    }
+
+    /// Build an extension-qualified instruction (e.g. `activation.relu`)
+    fn build_ext_instruction(
+        &self,
+        ext_name: &str,
+        mnemonic: &str,
+        ops: &[&str],
+    ) -> Result<Instruction, AssemblerError> {
+        let (ext_id, opcode) = super::extensions::resolve_qualified_mnemonic(ext_name, mnemonic)
+            .ok_or_else(|| {
+                self.error(format!(
+                    "Unknown extension mnemonic: {}.{}",
+                    ext_name, mnemonic
+                ))
+            })?;
+
+        // Parse operands into 4 bytes
+        let mut operands = [0u8; 4];
+        for (i, op) in ops.iter().take(4).enumerate() {
+            if let Ok(reg) = self.parse_register_operand(Some(op)) {
+                operands[i] = reg.0;
+            } else if let Ok(imm) = self.parse_immediate(Some(op)) {
+                operands[i] = imm as u8;
+            }
+        }
+
+        Ok(Instruction::ext(ext_id, opcode, operands))
     }
 
     /// Parse a register operand
@@ -873,9 +957,9 @@ impl Assembler {
     /// Infer input shape from load_input instruction's target register
     fn infer_input_shape(&self) -> Vec<usize> {
         for instr in &self.instructions {
-            if instr.action == Action::LOAD_INPUT {
+            if instr.opcode == Action::LOAD_INPUT.0 && instr.ext_id == 0 {
                 // Find the target register's shape
-                if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.target) {
+                if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.target()) {
                     return reg_meta.shape.clone();
                 }
             }
@@ -886,9 +970,9 @@ impl Assembler {
     /// Infer output shape from store_output instruction's source register
     fn infer_output_shape(&self) -> Vec<usize> {
         for instr in &self.instructions {
-            if instr.action == Action::STORE_OUTPUT {
+            if instr.opcode == Action::STORE_OUTPUT.0 && instr.ext_id == 0 {
                 // Find the source register's shape
-                if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.source) {
+                if let Some(reg_meta) = self.registers.iter().find(|r| r.id == instr.source()) {
                     return reg_meta.shape.clone();
                 }
             }
@@ -904,11 +988,11 @@ impl Assembler {
                 .get(label)
                 .ok_or_else(|| self.error(format!("Undefined label: {}", label)))?;
 
-            // Update instruction's modifier with target address
+            // Update instruction's operands with target address
             let instr = &mut self.instructions[*instr_idx];
             let count = (*target_idx as u16).to_be_bytes();
-            instr.modifier[0] = count[0];
-            instr.modifier[1] = count[1];
+            instr.operands[2] = count[0];
+            instr.operands[3] = count[1];
         }
         Ok(())
     }
@@ -975,13 +1059,13 @@ mod tests {
         assert_eq!(program.instructions.len(), 5);
 
         // Check first instruction
-        assert_eq!(program.instructions[0].action, Action::LOAD_INPUT);
+        assert_eq!(program.instructions[0].opcode, Action::LOAD_INPUT.0);
 
         // Check ternary_matmul
-        assert_eq!(program.instructions[1].action, Action::TERNARY_MATMUL);
+        assert_eq!(program.instructions[1].opcode, Action::TERNARY_MATMUL.0);
 
         // Check halt
-        assert_eq!(program.instructions[4].action, Action::HALT);
+        assert_eq!(program.instructions[4].opcode, Action::HALT.0);
     }
 
     #[test]
@@ -1035,5 +1119,88 @@ mod tests {
         // Check version
         let version = u16::from_le_bytes([binary[4], binary[5]]);
         assert_eq!(version, TERNSIG_VERSION);
+    }
+
+    #[test]
+    fn test_requires_section() {
+        let source = r#"
+.meta
+    name "test_program"
+    version 1
+
+.requires
+    ternary    0x0002
+    activation 0x0003
+    learning
+
+.registers
+    H0: i32[12]
+    H1: i32[32]
+    C0: ternary[32, 12]  key="test.w1"
+
+.program
+    load_input    H0
+    ternary_matmul H1, C0, H0
+    relu          H1, H1
+    halt
+"#;
+
+        let program = assemble(source).expect("Assembly failed");
+
+        // Verify required extensions
+        assert_eq!(program.required_extensions.len(), 3);
+        assert_eq!(program.required_extensions[0].name, "ternary");
+        assert_eq!(program.required_extensions[0].ext_id, 0x0002);
+        assert_eq!(program.required_extensions[1].name, "activation");
+        assert_eq!(program.required_extensions[1].ext_id, 0x0003);
+        assert_eq!(program.required_extensions[2].name, "learning");
+        assert_eq!(program.required_extensions[2].ext_id, 0x0004);
+    }
+
+    #[test]
+    fn test_ext_qualified_mnemonic() {
+        let source = r#"
+.requires
+    activation
+
+.registers
+    H0: i32[4]
+    H1: i32[4]
+
+.program
+    activation.relu H0, H1
+    halt
+"#;
+
+        let program = assemble(source).expect("Assembly failed");
+
+        // First instruction should be extension instruction
+        let instr = &program.instructions[0];
+        assert_eq!(instr.ext_id, 0x0003); // activation ext_id
+        assert_eq!(instr.opcode, 0x0000); // RELU is opcode 0 in activation
+    }
+
+    #[test]
+    fn test_requires_name_only() {
+        let source = r#"
+.requires
+    tensor
+    ternary
+    activation
+    learning
+    neuro
+    arch
+
+.registers
+    H0: i32[4]
+
+.program
+    halt
+"#;
+
+        let program = assemble(source).expect("Assembly failed");
+        assert_eq!(program.required_extensions.len(), 6);
+        assert_eq!(program.required_extensions[0].ext_id, 0x0001);
+        assert_eq!(program.required_extensions[5].ext_id, 0x0006);
     }
 }

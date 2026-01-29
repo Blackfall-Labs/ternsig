@@ -75,10 +75,7 @@ pub use learning::{
 
 // Thermogram integration
 pub mod thermo;
-pub use thermo::{
-    TensorThermogram, WeightContent, ThermalState,
-    TensorContent, ProgramMetaContent, LearningStateContent,
-};
+pub use thermo::TensorThermogram;
 
 // Error types
 mod error;

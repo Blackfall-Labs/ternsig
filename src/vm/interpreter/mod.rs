@@ -533,7 +533,18 @@ impl Interpreter {
         let instr = self.program[self.pc].clone();
         self.pc += 1;
 
-        match instr.action {
+        // Extension dispatch: non-core instructions go through the registry
+        if instr.is_extension() {
+            // TODO: Phase 2 — dispatch via ExtensionRegistry
+            return StepResult::Error(format!(
+                "Extension 0x{:04X} not yet supported (opcode 0x{:04X})",
+                instr.ext_id, instr.opcode
+            ));
+        }
+
+        // Core ISA dispatch (ext_id == 0x0000)
+        let action = Action(instr.opcode);
+        match action {
             Action::NOP => StepResult::Continue,
             Action::HALT => StepResult::Halt,
             Action::RESET => {
@@ -542,22 +553,22 @@ impl Interpreter {
                 StepResult::Continue
             }
             Action::LOAD_INPUT => {
-                let idx = instr.target.index();
+                let idx = instr.target().index();
                 let data = self.input_buffer.clone();
                 let len = data.len();
                 self.hot_regs[idx] = Some(HotBuffer { data, shape: vec![len] });
                 StepResult::Continue
             }
             Action::STORE_OUTPUT => {
-                let idx = instr.source.index();
+                let idx = instr.source().index();
                 if let Some(buf) = &self.hot_regs[idx] {
                     self.output_buffer = buf.data.clone();
                 }
                 StepResult::Continue
             }
             Action::ZERO_REG => {
-                let idx = instr.target.index();
-                if instr.target.is_hot() {
+                let idx = instr.target().index();
+                if instr.target().is_hot() {
                     if let Some(buf) = &mut self.hot_regs[idx] {
                         buf.data.fill(0);
                     }
@@ -565,9 +576,9 @@ impl Interpreter {
                 StepResult::Continue
             }
             Action::COPY_REG => {
-                let src_idx = instr.source.index();
-                let dst_idx = instr.target.index();
-                if instr.source.is_hot() && instr.target.is_hot() {
+                let src_idx = instr.source().index();
+                let dst_idx = instr.target().index();
+                if instr.source().is_hot() && instr.target().is_hot() {
                     if let Some(src) = self.hot_regs[src_idx].clone() {
                         self.hot_regs[dst_idx] = Some(src);
                     }
@@ -589,6 +600,7 @@ impl Interpreter {
             Action::SHIFT => self.execute_shift(instr),
             Action::CMP_GT => self.execute_cmp_gt(instr),
             Action::MAX_REDUCE => self.execute_max_reduce(instr),
+            Action::CLAMP => self.execute_clamp(instr),
 
             // Ternary ops (ops_ternary.rs)
             Action::DEQUANTIZE => self.execute_dequantize(instr),
@@ -643,7 +655,7 @@ impl Interpreter {
             Action::PRUNE_NEURON => self.execute_prune_neuron(instr),
             Action::INIT_RANDOM => self.execute_init_random(instr),
 
-            _ => StepResult::Error(format!("Unknown action: {:?}", instr.action)),
+            _ => StepResult::Error(format!("Unknown opcode: 0x{:04X}", instr.opcode)),
         }
     }
 
