@@ -4,19 +4,41 @@
 //! Learning is dopamine-gated — no learning without neuromodulator support.
 
 use crate::vm::extension::{
-    ExecutionContext, Extension, InstructionMeta, OperandPattern, StepResult,
+    DomainOp, ExecutionContext, Extension, InstructionMeta, OperandPattern, StepResult,
 };
-use crate::vm::interpreter::HotBuffer;
+use crate::vm::interpreter::{ColdBuffer, HotBuffer};
 use crate::vm::register::Register;
+use std::sync::Mutex;
+
+/// CHL (Contrastive Hebbian Learning) phase state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChlPhase {
+    Idle,
+    Free,
+    Clamped,
+}
 
 /// Learning extension — weight update and exploration operations.
 pub struct LearningExtension {
     instructions: Vec<InstructionMeta>,
+    /// CHL phase tracking (free vs clamped).
+    chl_phase: Mutex<ChlPhase>,
+    /// CHL free-phase correlations per cold register.
+    /// Key: cold register index. Value: correlation vector (outer product sums).
+    chl_free_corr: Mutex<Vec<Option<Vec<i64>>>>,
+    /// CHL clamped-phase correlations per cold register.
+    chl_clamp_corr: Mutex<Vec<Option<Vec<i64>>>>,
+    /// Weight checkpoints for rollback (per cold register index).
+    checkpoints: Mutex<Vec<Option<ColdBuffer>>>,
 }
 
 impl LearningExtension {
     pub fn new() -> Self {
         Self {
+            chl_phase: Mutex::new(ChlPhase::Idle),
+            chl_free_corr: Mutex::new(vec![None; 64]),
+            chl_clamp_corr: Mutex::new(vec![None; 64]),
+            checkpoints: Mutex::new(vec![None; 64]),
             instructions: vec![
                 InstructionMeta {
                     opcode: 0x0000,
@@ -173,9 +195,22 @@ impl Extension for LearningExtension {
             0x0001 => execute_mastery_commit(operands, ctx),
             0x0002 => execute_add_babble(operands, ctx),
             0x0003 => execute_load_target(operands, ctx),
-            0x0004 => StepResult::Continue, // MARK_ELIGIBILITY (stub)
-            // Unimplemented CHL/learning ops
-            0x0005..=0x0013 => StepResult::Continue,
+            0x0004 => execute_mark_eligibility(operands, ctx),
+            0x0005 => self.execute_chl_free_start(),
+            0x0006 => self.execute_chl_free_record(operands, ctx),
+            0x0007 => self.execute_chl_clamp_start(),
+            0x0008 => self.execute_chl_clamp_record(operands, ctx),
+            0x0009 => self.execute_chl_update(operands, ctx),
+            0x000A => execute_chl_backprop_clamp(operands, ctx),
+            0x000B => execute_decay_eligibility(operands, ctx),
+            0x000C => execute_compute_error(operands, ctx),
+            0x000D => execute_update_weights(operands, ctx),
+            0x000E => execute_decay_babble(ctx),
+            0x000F => execute_compute_rpe(operands, ctx),
+            0x0010 => execute_gate_error(operands, ctx),
+            0x0011 => self.execute_checkpoint_weights(operands, ctx),
+            0x0012 => self.execute_rollback_weights(operands, ctx),
+            0x0013 => StepResult::Yield(DomainOp::Consolidate),
             _ => StepResult::Error(format!("tvmr.learning: unknown opcode 0x{:04X}", opcode)),
         }
     }
@@ -326,6 +361,460 @@ fn execute_load_target(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
     ctx.hot_regs[idx] = Some(HotBuffer {
         data,
         shape: vec![len],
+    });
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// MARK_ELIGIBILITY [weights:1][activity:1][_:2]
+// Marks weights as eligible for update based on activity pattern.
+// Neurons with activity above mean are eligible (eligibility = activity).
+// =============================================================================
+fn execute_mark_eligibility(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let weights_idx = Register(ops[0]).index();
+    let activity_idx = Register(ops[1]).index();
+
+    let activity = match &ctx.hot_regs[activity_idx] {
+        Some(buf) => buf.data.clone(),
+        None => return StepResult::Error(format!("H{} not allocated", activity_idx)),
+    };
+
+    // Eligibility = activity values for active neurons, 0 for inactive
+    let mean = if activity.is_empty() {
+        0i64
+    } else {
+        activity.iter().map(|&v| v as i64).sum::<i64>() / activity.len() as i64
+    };
+
+    let eligibility: Vec<i32> = activity
+        .iter()
+        .map(|&v| if v as i64 > mean { v } else { 0 })
+        .collect();
+
+    // Store eligibility in pressure register (repurposed as eligibility trace)
+    let pressure = ctx.pressure_regs[weights_idx].get_or_insert_with(|| vec![0i32; eligibility.len()]);
+    if pressure.len() != eligibility.len() {
+        *pressure = vec![0i32; eligibility.len()];
+    }
+    // Add eligibility to existing pressure (accumulative)
+    for (i, &e) in eligibility.iter().enumerate() {
+        if i < pressure.len() {
+            pressure[i] = pressure[i].saturating_add(e);
+        }
+    }
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// CHL (Contrastive Hebbian Learning) — methods on LearningExtension
+// =============================================================================
+impl LearningExtension {
+    /// CHL_FREE_START: Enter free phase.
+    fn execute_chl_free_start(&self) -> StepResult {
+        let mut phase = self.chl_phase.lock().unwrap();
+        *phase = ChlPhase::Free;
+        // Clear all free-phase correlations
+        let mut corr = self.chl_free_corr.lock().unwrap();
+        for slot in corr.iter_mut() {
+            *slot = None;
+        }
+        StepResult::Continue
+    }
+
+    /// CHL_FREE_RECORD [visible:1][hidden:1][_:2]
+    /// Record free-phase correlations: corr[i*h+j] += visible[i] * hidden[j]
+    fn execute_chl_free_record(&self, ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+        let phase = *self.chl_phase.lock().unwrap();
+        if phase != ChlPhase::Free {
+            return StepResult::Error("CHL_FREE_RECORD called outside free phase".to_string());
+        }
+
+        let vis_idx = Register(ops[0]).index();
+        let hid_idx = Register(ops[1]).index();
+
+        let visible = match &ctx.hot_regs[vis_idx] {
+            Some(buf) => buf.data.clone(),
+            None => return StepResult::Error(format!("H{} not allocated", vis_idx)),
+        };
+        let hidden = match &ctx.hot_regs[hid_idx] {
+            Some(buf) => buf.data.clone(),
+            None => return StepResult::Error(format!("H{} not allocated", hid_idx)),
+        };
+
+        let v_len = visible.len();
+        let h_len = hidden.len();
+        let corr_size = v_len * h_len;
+
+        let mut corr = self.chl_free_corr.lock().unwrap();
+        // Use vis_idx as the storage key
+        let entry = corr[vis_idx].get_or_insert_with(|| vec![0i64; corr_size]);
+        if entry.len() != corr_size {
+            *entry = vec![0i64; corr_size];
+        }
+
+        for (i, &v) in visible.iter().enumerate() {
+            for (j, &h) in hidden.iter().enumerate() {
+                entry[i * h_len + j] += v as i64 * h as i64;
+            }
+        }
+
+        StepResult::Continue
+    }
+
+    /// CHL_CLAMP_START: Enter clamped phase.
+    fn execute_chl_clamp_start(&self) -> StepResult {
+        let mut phase = self.chl_phase.lock().unwrap();
+        *phase = ChlPhase::Clamped;
+        // Clear all clamped-phase correlations
+        let mut corr = self.chl_clamp_corr.lock().unwrap();
+        for slot in corr.iter_mut() {
+            *slot = None;
+        }
+        StepResult::Continue
+    }
+
+    /// CHL_CLAMP_RECORD [visible:1][hidden:1][_:2]
+    /// Record clamped-phase correlations.
+    fn execute_chl_clamp_record(&self, ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+        let phase = *self.chl_phase.lock().unwrap();
+        if phase != ChlPhase::Clamped {
+            return StepResult::Error("CHL_CLAMP_RECORD called outside clamped phase".to_string());
+        }
+
+        let vis_idx = Register(ops[0]).index();
+        let hid_idx = Register(ops[1]).index();
+
+        let visible = match &ctx.hot_regs[vis_idx] {
+            Some(buf) => buf.data.clone(),
+            None => return StepResult::Error(format!("H{} not allocated", vis_idx)),
+        };
+        let hidden = match &ctx.hot_regs[hid_idx] {
+            Some(buf) => buf.data.clone(),
+            None => return StepResult::Error(format!("H{} not allocated", hid_idx)),
+        };
+
+        let v_len = visible.len();
+        let h_len = hidden.len();
+        let corr_size = v_len * h_len;
+
+        let mut corr = self.chl_clamp_corr.lock().unwrap();
+        let entry = corr[vis_idx].get_or_insert_with(|| vec![0i64; corr_size]);
+        if entry.len() != corr_size {
+            *entry = vec![0i64; corr_size];
+        }
+
+        for (i, &v) in visible.iter().enumerate() {
+            for (j, &h) in hidden.iter().enumerate() {
+                entry[i * h_len + j] += v as i64 * h as i64;
+            }
+        }
+
+        StepResult::Continue
+    }
+
+    /// CHL_UPDATE [weights:1][_:3]
+    /// Compute delta_w = clamped_corr - free_corr, apply to weights.
+    /// Weight update: polarity shifts based on sign of correlation difference.
+    fn execute_chl_update(&self, ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+        let weights_idx = Register(ops[0]).index();
+
+        // Dopamine gating
+        if !ctx.chemical_state.learning_enabled() {
+            return StepResult::Continue;
+        }
+
+        let free = self.chl_free_corr.lock().unwrap();
+        let clamp = self.chl_clamp_corr.lock().unwrap();
+
+        let free_corr = match &free[weights_idx] {
+            Some(c) => c,
+            None => return StepResult::Continue, // No free-phase recorded
+        };
+        let clamp_corr = match &clamp[weights_idx] {
+            Some(c) => c,
+            None => return StepResult::Continue, // No clamped-phase recorded
+        };
+
+        if free_corr.len() != clamp_corr.len() {
+            return StepResult::Error("CHL correlation dimension mismatch".to_string());
+        }
+
+        // Compute delta and apply to pressure registers
+        let deltas: Vec<i32> = free_corr
+            .iter()
+            .zip(clamp_corr.iter())
+            .map(|(&f, &c)| {
+                // delta = clamped - free (standard CHL rule)
+                let d = c - f;
+                // Scale down to i32 range
+                (d >> 8).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+            })
+            .collect();
+
+        let pressure = ctx.pressure_regs[weights_idx]
+            .get_or_insert_with(|| vec![0i32; deltas.len()]);
+        if pressure.len() != deltas.len() {
+            *pressure = vec![0i32; deltas.len()];
+        }
+        for (i, &d) in deltas.iter().enumerate() {
+            pressure[i] = pressure[i].saturating_add(d);
+        }
+
+        // Reset CHL phase
+        drop(free);
+        drop(clamp);
+        *self.chl_phase.lock().unwrap() = ChlPhase::Idle;
+
+        StepResult::Continue
+    }
+
+    /// CHECKPOINT_WEIGHTS [cold_reg:1][_:3]
+    /// Save a snapshot of the cold register for potential rollback.
+    fn execute_checkpoint_weights(&self, ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+        let idx = Register(ops[0]).index();
+
+        let cold = match &ctx.cold_regs[idx] {
+            Some(buf) => buf.clone(),
+            None => return StepResult::Error(format!("C{} not allocated", idx)),
+        };
+
+        let mut checkpoints = self.checkpoints.lock().unwrap();
+        checkpoints[idx] = Some(cold);
+
+        StepResult::Continue
+    }
+
+    /// ROLLBACK_WEIGHTS [cold_reg:1][_:3]
+    /// Restore cold register from checkpoint.
+    fn execute_rollback_weights(&self, ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+        let idx = Register(ops[0]).index();
+
+        let mut checkpoints = self.checkpoints.lock().unwrap();
+        match checkpoints[idx].take() {
+            Some(saved) => {
+                ctx.cold_regs[idx] = Some(saved);
+                StepResult::Continue
+            }
+            None => StepResult::Error(format!("No checkpoint for C{}", idx)),
+        }
+    }
+}
+
+// =============================================================================
+// CHL_BACKPROP_CLAMP [target:1][source:1][_:2]
+// Propagate clamped signal backward through weights.
+// target = transpose(weights) @ source (simplified backprop).
+// =============================================================================
+fn execute_chl_backprop_clamp(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let target_idx = Register(ops[0]).index();
+    let source_idx = Register(ops[1]).index();
+
+    let source = match &ctx.hot_regs[source_idx] {
+        Some(buf) => buf.data.clone(),
+        None => return StepResult::Error(format!("H{} not allocated", source_idx)),
+    };
+
+    // Use the target register's corresponding cold weights for transpose matmul
+    let cold = match &ctx.cold_regs[target_idx] {
+        Some(buf) => buf,
+        None => return StepResult::Error(format!("C{} not allocated", target_idx)),
+    };
+
+    if cold.shape.len() < 2 {
+        return StepResult::Error("Weights must be 2D for backprop".to_string());
+    }
+
+    let out_dim = cold.shape[0]; // rows
+    let in_dim = cold.shape[1];  // cols
+
+    // Transpose matmul: result[j] = sum_i(weights[i][j] * source[i])
+    let mut result = vec![0i64; in_dim];
+    for i in 0..out_dim.min(source.len()) {
+        for j in 0..in_dim {
+            let w_idx = i * in_dim + j;
+            if w_idx < cold.weights.len() {
+                let w = &cold.weights[w_idx];
+                let effective = w.polarity as i64 * w.magnitude as i64;
+                result[j] += effective * source[i] as i64;
+            }
+        }
+    }
+
+    let result_i32: Vec<i32> = result
+        .iter()
+        .map(|&v| v.clamp(i32::MIN as i64, i32::MAX as i64) as i32)
+        .collect();
+
+    ctx.hot_regs[target_idx] = Some(HotBuffer {
+        data: result_i32,
+        shape: vec![in_dim],
+    });
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// DECAY_ELIGIBILITY [weights:1][_:3]
+// Exponential decay of eligibility traces: pressure[i] = pressure[i] * 230 / 256
+// (90% retention per tick — biological eligibility trace time constant).
+// =============================================================================
+fn execute_decay_eligibility(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let idx = Register(ops[0]).index();
+
+    if let Some(pressure) = &mut ctx.pressure_regs[idx] {
+        for p in pressure.iter_mut() {
+            // ~90% retention: 230/256 ≈ 0.898
+            *p = ((*p as i64 * 230) / 256) as i32;
+        }
+    }
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// COMPUTE_ERROR [target:1][output:1][_:2]
+// Compute element-wise error: current_error = sum(|target - output|)
+// Also yields DomainOp::ComputeError for host-level error tracking.
+// =============================================================================
+fn execute_compute_error(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let target_idx = Register(ops[0]).index();
+    let output_idx = Register(ops[1]).index();
+
+    let target_data = match &ctx.hot_regs[target_idx] {
+        Some(buf) => &buf.data,
+        None => return StepResult::Error(format!("H{} not allocated", target_idx)),
+    };
+
+    let output_data = match &ctx.hot_regs[output_idx] {
+        Some(buf) => &buf.data,
+        None => return StepResult::Error(format!("H{} not allocated", output_idx)),
+    };
+
+    let len = target_data.len().min(output_data.len());
+    let error: i64 = (0..len)
+        .map(|i| (target_data[i] as i64 - output_data[i] as i64).abs())
+        .sum();
+
+    *ctx.current_error = error.clamp(0, i32::MAX as i64) as i32;
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// UPDATE_WEIGHTS [weights:1][_:3]
+// Apply accumulated pressure from eligibility traces to weights.
+// Combines eligibility, error, and dopamine gating.
+// =============================================================================
+fn execute_update_weights(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let idx = Register(ops[0]).index();
+
+    if !ctx.chemical_state.learning_enabled() {
+        return StepResult::Continue;
+    }
+
+    let error_scale = (*ctx.current_error as i64).min(1000).max(1);
+    let dopamine = ctx.chemical_state.dopamine_scale() as i64;
+
+    let pressure = match &ctx.pressure_regs[idx] {
+        Some(p) => p.clone(),
+        None => return StepResult::Continue,
+    };
+
+    let cold = match ctx.cold_regs[idx].as_mut() {
+        Some(c) => c,
+        None => return StepResult::Error(format!("C{} not allocated", idx)),
+    };
+
+    for (i, &p) in pressure.iter().enumerate() {
+        if i >= cold.weights.len() {
+            break;
+        }
+        // Scale pressure by error and dopamine
+        let scaled = (p as i64 * error_scale * dopamine) / (256 * 256);
+        if scaled.abs() > 30 {
+            let s = &mut cold.weights[i];
+            let direction = if scaled > 0 { 1i8 } else { -1i8 };
+            if s.polarity == direction {
+                s.magnitude = s.magnitude.saturating_add(3);
+            } else if s.polarity == 0 {
+                s.polarity = direction;
+                s.magnitude = 3;
+            } else if s.magnitude > 3 {
+                s.magnitude -= 3;
+            } else {
+                s.polarity = direction;
+                s.magnitude = 3;
+            }
+        }
+    }
+
+    // Clear pressure after applying
+    if let Some(p) = &mut ctx.pressure_regs[idx] {
+        p.iter_mut().for_each(|v| *v = 0);
+    }
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// DECAY_BABBLE
+// Reduce babble scale: babble_scale = babble_scale * 245 / 256
+// (~96% retention — gradual exploration reduction as learning stabilizes).
+// =============================================================================
+fn execute_decay_babble(ctx: &mut ExecutionContext) -> StepResult {
+    let current = *ctx.babble_scale as i64;
+    *ctx.babble_scale = ((current * 245) / 256) as i32;
+    StepResult::Continue
+}
+
+// =============================================================================
+// COMPUTE_RPE [predicted:1][actual:1][_:2]
+// Reward Prediction Error: delta = actual_reward - predicted_reward.
+// Result stored in current_error (signed — positive = better than expected).
+// =============================================================================
+fn execute_compute_rpe(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let predicted_idx = Register(ops[0]).index();
+    let actual_idx = Register(ops[1]).index();
+
+    let predicted = match &ctx.hot_regs[predicted_idx] {
+        Some(buf) => {
+            if buf.data.is_empty() { 0i64 } else { buf.data[0] as i64 }
+        }
+        None => return StepResult::Error(format!("H{} not allocated", predicted_idx)),
+    };
+
+    let actual = match &ctx.hot_regs[actual_idx] {
+        Some(buf) => {
+            if buf.data.is_empty() { 0i64 } else { buf.data[0] as i64 }
+        }
+        None => return StepResult::Error(format!("H{} not allocated", actual_idx)),
+    };
+
+    // RPE = actual - predicted (positive = surprise reward, negative = surprise punishment)
+    let rpe = actual - predicted;
+    *ctx.current_error = rpe.clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// GATE_ERROR [source:1][threshold:1][_:2]
+// Gate learning based on error threshold.
+// If |current_error| < threshold * 256, suppress learning (error too small).
+// Writes gated error magnitude into source register H[reg][0].
+// =============================================================================
+fn execute_gate_error(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let target_idx = Register(ops[0]).index();
+    let threshold = ops[1] as i32 * 256;
+
+    let error_abs = (*ctx.current_error).abs();
+    let gated = if error_abs >= threshold { error_abs } else { 0 };
+
+    ctx.hot_regs[target_idx] = Some(HotBuffer {
+        data: vec![gated],
+        shape: vec![1],
     });
 
     StepResult::Continue

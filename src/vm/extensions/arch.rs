@@ -121,8 +121,10 @@ impl Extension for ArchExtension {
             0x0004 => execute_grow_neuron(operands, ctx),
             0x0005 => execute_prune_neuron(operands, ctx),
             0x0006 => execute_init_random(operands, ctx),
-            // Unimplemented arch ops
-            0x0007..=0x000A => StepResult::Continue,
+            0x0007 => execute_define_layer(operands, ctx),
+            0x0008 => execute_freeze_layer(operands, ctx),
+            0x0009 => execute_unfreeze_layer(operands, ctx),
+            0x000A => execute_set_activation(operands, ctx),
             _ => StepResult::Error(format!("tvmr.arch: unknown opcode 0x{:04X}", opcode)),
         }
     }
@@ -396,6 +398,85 @@ fn execute_prune_neuron(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult 
             "Cannot prune {}D register, only 1D or 2D supported",
             cold.shape.len()
         ));
+    }
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// DEFINE_LAYER [layer:1][in_dim:1][out_hi:1][out_lo:1]
+// Define layer dimensions by allocating a cold register with shape [out_dim, in_dim].
+// out_dim = (out_hi << 8) | out_lo for dimensions > 255.
+// Layer register index = layer operand (cold bank).
+// =============================================================================
+fn execute_define_layer(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let layer_idx = ops[0] as usize & 0x3F; // cold register index
+    let in_dim = ops[1] as usize;
+    let out_dim = ((ops[2] as usize) << 8) | (ops[3] as usize);
+
+    if in_dim == 0 || out_dim == 0 {
+        return StepResult::Error("Layer dimensions must be > 0".to_string());
+    }
+
+    if ctx.cold_regs[layer_idx].is_some() {
+        return StepResult::Error(format!("C{} already allocated", layer_idx));
+    }
+
+    ctx.cold_regs[layer_idx] = Some(ColdBuffer::new(vec![out_dim, in_dim]));
+    StepResult::Continue
+}
+
+// =============================================================================
+// FREEZE_LAYER [cold_reg:1][_:3]
+// Mark all weights in a cold register as Cold temperature (non-trainable).
+// Frozen weights have maximum threshold — learning pressure cannot flip them.
+// =============================================================================
+fn execute_freeze_layer(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let idx = Register(ops[0]).index();
+
+    let cold = match ctx.cold_regs[idx].as_mut() {
+        Some(buf) => buf,
+        None => return StepResult::Error(format!("C{} not allocated", idx)),
+    };
+
+    let count = cold.weights.len();
+    cold.temperatures = Some(vec![SignalTemperature::Cold; count]);
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// UNFREEZE_LAYER [cold_reg:1][_:3]
+// Reset all weights to Hot temperature (fully trainable).
+// =============================================================================
+fn execute_unfreeze_layer(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let idx = Register(ops[0]).index();
+
+    let cold = match ctx.cold_regs[idx].as_mut() {
+        Some(buf) => buf,
+        None => return StepResult::Error(format!("C{} not allocated", idx)),
+    };
+
+    let count = cold.weights.len();
+    cold.temperatures = Some(vec![SignalTemperature::Hot; count]);
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// SET_ACTIVATION [cold_reg:1][activation_id:1][_:2]
+// Store activation function ID in shape register for the cold register.
+// The interpreter uses this when executing forward passes.
+// IDs: 0=none, 1=relu, 2=sigmoid, 3=tanh, 4=softmax, 5=gelu.
+// =============================================================================
+fn execute_set_activation(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let reg_idx = Register(ops[0]).index();
+    let activation_id = ops[1] as usize;
+
+    // Store activation ID in the shape register for this cold register
+    // Convention: shape_regs[idx] = [activation_id] when used for activation metadata
+    if reg_idx < ctx.shape_regs.len() {
+        ctx.shape_regs[reg_idx] = vec![activation_id];
     }
 
     StepResult::Continue

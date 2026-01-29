@@ -8,6 +8,7 @@ use crate::vm::extension::{
 };
 use crate::vm::interpreter::HotBuffer;
 use crate::vm::register::Register;
+use crate::Signal;
 
 /// Ternary extension — Signal-based neural network operations.
 pub struct TernaryExtension {
@@ -138,8 +139,13 @@ impl Extension for TernaryExtension {
             0x0004 => execute_embed_lookup(operands, ctx),
             0x0005 => execute_embed_sequence(operands, ctx),
             0x0006 => execute_gate_update(operands, ctx),
-            // Unimplemented signal ops return Continue (stubs)
-            0x0007..=0x000D => StepResult::Continue,
+            0x0007 => execute_quantize(operands, ctx),
+            0x0008 => execute_pack_ternary(operands, ctx),
+            0x0009 => execute_unpack_ternary(operands, ctx),
+            0x000A => execute_apply_polarity(operands, ctx),
+            0x000B => execute_apply_magnitude(operands, ctx),
+            0x000C => execute_threshold_polarity(operands, ctx),
+            0x000D => execute_accumulate_pressure(operands, ctx),
             _ => StepResult::Error(format!("tvmr.ternary: unknown opcode 0x{:04X}", opcode)),
         }
     }
@@ -400,6 +406,243 @@ fn execute_embed_sequence(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResul
         data: output_data,
         shape: vec![actual_count, embedding_dim],
     });
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// QUANTIZE [dst:1][src:1][_:2]
+// Convert i32 activations to ternary Signal representation.
+// Polarity = sign(value), Magnitude = clamp(|value| >> 8, 0, 255).
+// Writes cold register with quantized weights.
+// =============================================================================
+fn execute_quantize(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let dst_idx = Register(ops[0]).index();
+    let src_idx = Register(ops[1]).index();
+
+    let source = match &ctx.hot_regs[src_idx] {
+        Some(buf) => &buf.data,
+        None => return StepResult::Error(format!("H{} not allocated", src_idx)),
+    };
+
+    let signals: Vec<Signal> = source
+        .iter()
+        .map(|&v| {
+            let polarity = if v > 0 { 1i8 } else if v < 0 { -1i8 } else { 0i8 };
+            let magnitude = ((v.unsigned_abs() >> 8) as u8).min(255);
+            Signal { polarity, magnitude }
+        })
+        .collect();
+
+    let len = signals.len();
+    let mut cold = crate::vm::interpreter::ColdBuffer::new(vec![len]);
+    cold.weights = signals;
+    ctx.cold_regs[dst_idx] = Some(cold);
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// PACK_TERNARY [dst:1][src:1][_:2]
+// Pack ternary signals into 2-bit representation: 4 signals per byte.
+// Encoding: -1 → 0b10, 0 → 0b00, +1 → 0b01
+// Output is i32 values where each holds 4 packed signals (bits 0-7).
+// =============================================================================
+fn execute_pack_ternary(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let dst_idx = Register(ops[0]).index();
+    let src_idx = Register(ops[1]).index();
+
+    let cold = match &ctx.cold_regs[src_idx] {
+        Some(buf) => buf,
+        None => return StepResult::Error(format!("C{} not allocated", src_idx)),
+    };
+
+    let packed_count = (cold.weights.len() + 3) / 4;
+    let mut packed = vec![0i32; packed_count];
+
+    for (i, signal) in cold.weights.iter().enumerate() {
+        let pack_idx = i / 4;
+        let bit_offset = (i % 4) * 2;
+        let encoded: u8 = match signal.polarity {
+            p if p < 0 => 0b10,
+            p if p > 0 => 0b01,
+            _ => 0b00,
+        };
+        packed[pack_idx] |= (encoded as i32) << bit_offset;
+    }
+
+    ctx.hot_regs[dst_idx] = Some(HotBuffer {
+        data: packed,
+        shape: vec![packed_count],
+    });
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// UNPACK_TERNARY [dst:1][src:1][_:2]
+// Unpack 2-bit ternary to full Signal representation.
+// Input: packed i32 values. Output: cold register with Signal weights.
+// =============================================================================
+fn execute_unpack_ternary(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let dst_idx = Register(ops[0]).index();
+    let src_idx = Register(ops[1]).index();
+
+    let packed = match &ctx.hot_regs[src_idx] {
+        Some(buf) => &buf.data,
+        None => return StepResult::Error(format!("H{} not allocated", src_idx)),
+    };
+
+    let mut signals = Vec::with_capacity(packed.len() * 4);
+    for &word in packed.iter() {
+        for bit_offset in (0..8).step_by(2) {
+            let encoded = ((word >> bit_offset) & 0b11) as u8;
+            let polarity = match encoded {
+                0b01 => 1i8,
+                0b10 => -1i8,
+                _ => 0i8,
+            };
+            signals.push(Signal {
+                polarity,
+                magnitude: if polarity != 0 { 128 } else { 0 },
+            });
+        }
+    }
+
+    let len = signals.len();
+    let mut cold = crate::vm::interpreter::ColdBuffer::new(vec![len]);
+    cold.weights = signals;
+    ctx.cold_regs[dst_idx] = Some(cold);
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// APPLY_POLARITY [cold_dst:1][hot_src:1][_:2]
+// Apply polarity updates from hot register to cold weights.
+// hot_src[i] > 0 → polarity = +1, < 0 → polarity = -1, == 0 → no change.
+// =============================================================================
+fn execute_apply_polarity(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let cold_idx = Register(ops[0]).index();
+    let hot_idx = Register(ops[1]).index();
+
+    let updates = match &ctx.hot_regs[hot_idx] {
+        Some(buf) => buf.data.clone(),
+        None => return StepResult::Error(format!("H{} not allocated", hot_idx)),
+    };
+
+    let cold = match ctx.cold_regs[cold_idx].as_mut() {
+        Some(buf) => buf,
+        None => return StepResult::Error(format!("C{} not allocated", cold_idx)),
+    };
+
+    for (i, &update) in updates.iter().enumerate() {
+        if i >= cold.weights.len() {
+            break;
+        }
+        if update > 0 {
+            cold.weights[i].polarity = 1;
+        } else if update < 0 {
+            cold.weights[i].polarity = -1;
+        }
+        // update == 0 → no change
+    }
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// APPLY_MAGNITUDE [cold_dst:1][hot_src:1][_:2]
+// Apply magnitude updates from hot register to cold weights.
+// hot_src[i] is the new magnitude (clamped to 0-255).
+// =============================================================================
+fn execute_apply_magnitude(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let cold_idx = Register(ops[0]).index();
+    let hot_idx = Register(ops[1]).index();
+
+    let updates = match &ctx.hot_regs[hot_idx] {
+        Some(buf) => buf.data.clone(),
+        None => return StepResult::Error(format!("H{} not allocated", hot_idx)),
+    };
+
+    let cold = match ctx.cold_regs[cold_idx].as_mut() {
+        Some(buf) => buf,
+        None => return StepResult::Error(format!("C{} not allocated", cold_idx)),
+    };
+
+    for (i, &update) in updates.iter().enumerate() {
+        if i >= cold.weights.len() {
+            break;
+        }
+        cold.weights[i].magnitude = update.clamp(0, 255) as u8;
+    }
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// THRESHOLD_POLARITY [cold_reg:1][pressure_src:1][_:2]
+// Check if accumulated pressure exceeds hysteresis threshold for polarity flip.
+// If |pressure[i]| > magnitude * 2, flip polarity and reset magnitude.
+// This implements biological hysteresis — you need sustained opposing evidence
+// to flip a synapse's sign.
+// =============================================================================
+fn execute_threshold_polarity(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let cold_idx = Register(ops[0]).index();
+    let pressure_idx = Register(ops[1]).index();
+
+    let pressure = match &ctx.hot_regs[pressure_idx] {
+        Some(buf) => buf.data.clone(),
+        None => return StepResult::Error(format!("H{} not allocated", pressure_idx)),
+    };
+
+    let cold = match ctx.cold_regs[cold_idx].as_mut() {
+        Some(buf) => buf,
+        None => return StepResult::Error(format!("C{} not allocated", cold_idx)),
+    };
+
+    for (i, &p) in pressure.iter().enumerate() {
+        if i >= cold.weights.len() {
+            break;
+        }
+        let threshold = cold.weights[i].magnitude as i32 * 2;
+        if p.abs() > threshold {
+            // Flip polarity
+            let new_polarity = if p > 0 { 1i8 } else { -1i8 };
+            if cold.weights[i].polarity != new_polarity {
+                cold.weights[i].polarity = new_polarity;
+                // Reset magnitude to baseline after flip (new synapse)
+                cold.weights[i].magnitude = 30;
+            }
+        }
+    }
+
+    StepResult::Continue
+}
+
+// =============================================================================
+// ACCUMULATE_PRESSURE [dst_hot:1][src_hot:1][_:2]
+// Accumulate polarity pressure: dst[i] += src[i]
+// Used to build up evidence for polarity flips over time.
+// =============================================================================
+fn execute_accumulate_pressure(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
+    let dst_idx = Register(ops[0]).index();
+    let src_idx = Register(ops[1]).index();
+
+    let source = match &ctx.hot_regs[src_idx] {
+        Some(buf) => buf.data.clone(),
+        None => return StepResult::Error(format!("H{} not allocated", src_idx)),
+    };
+
+    let dst = ctx.hot_regs[dst_idx].get_or_insert_with(|| HotBuffer {
+        data: vec![0i32; source.len()],
+        shape: vec![source.len()],
+    });
+
+    let len = dst.data.len().min(source.len());
+    for i in 0..len {
+        dst.data[i] = dst.data[i].saturating_add(source[i]);
+    }
 
     StepResult::Continue
 }
