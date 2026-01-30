@@ -11,16 +11,18 @@
 //! | 0x0001 | tensor        | 18          | Functional |
 //! | 0x0002 | ternary       | 14          | Functional |
 //! | 0x0003 | activation    | 5           | Functional |
-//! | 0x0004 | learning      | 20          | Functional |
-//! | 0x0005 | neuro         | 8           | Placeholder |
-//! | 0x0006 | arch          | 11          | Functional |
-//! | 0x0007 | orchestration | 8           | Placeholder |
-//! | 0x0008 | lifecycle     | 8           | Placeholder |
-//! | 0x0009 | ipc           | 8           | Placeholder |
-//! | 0x000A | test          | 8           | Placeholder |
+//! | 0x0004 | learning      | 21          | Functional |
+//! | 0x0005 | neuro         | 20          | Functional |
+//! | 0x0006 | arch          | 13          | Functional |
+//! | 0x0007 | orchestration | 14          | Functional |
+//! | 0x0008 | lifecycle     | 13          | Functional |
+//! | 0x0009 | ipc           | 8           | Functional |
+//! | 0x000A | test          | 8           | Functional |
+//! | 0x000B | bank          | 12          | Functional |
 
 pub mod activation;
 pub mod arch;
+pub mod bank;
 pub mod ipc;
 pub mod learning;
 pub mod lifecycle;
@@ -32,6 +34,7 @@ pub mod test_ext;
 
 pub use activation::ActivationExtension;
 pub use arch::ArchExtension;
+pub use bank::BankExtension;
 pub use ipc::IpcExtension;
 pub use learning::LearningExtension;
 pub use lifecycle::LifecycleExtension;
@@ -58,6 +61,7 @@ pub fn resolve_ext_name(name: &str) -> Option<u16> {
         "lifecycle" => Some(0x0008),
         "ipc" => Some(0x0009),
         "test" => Some(0x000A),
+        "bank" => Some(0x000B),
         _ => None,
     }
 }
@@ -100,19 +104,19 @@ pub fn standard_extensions() -> Vec<Box<dyn Extension>> {
         Box::new(LifecycleExtension::new()),
         Box::new(IpcExtension::new()),
         Box::new(TestExtension::new()),
+        Box::new(BankExtension::new()),
     ]
 }
 
-/// Create only the "functional" extensions (those with real implementations).
+/// Create only the compute-focused extensions (no host interaction needed).
 ///
-/// Excludes placeholder extensions (neuro, orchestration, lifecycle, ipc, test).
-pub fn functional_extensions() -> Vec<Box<dyn Extension>> {
+/// Includes extensions that execute entirely within the interpreter without
+/// yielding DomainOps: tensor, ternary, activation.
+pub fn compute_only_extensions() -> Vec<Box<dyn Extension>> {
     vec![
         Box::new(TensorExtension::new()),
         Box::new(TernaryExtension::new()),
         Box::new(ActivationExtension::new()),
-        Box::new(LearningExtension::new()),
-        Box::new(ArchExtension::new()),
     ]
 }
 
@@ -123,13 +127,13 @@ mod tests {
     #[test]
     fn test_standard_extensions_count() {
         let exts = standard_extensions();
-        assert_eq!(exts.len(), 10);
+        assert_eq!(exts.len(), 11);
     }
 
     #[test]
-    fn test_functional_extensions_count() {
-        let exts = functional_extensions();
-        assert_eq!(exts.len(), 5);
+    fn test_compute_only_extensions_count() {
+        let exts = compute_only_extensions();
+        assert_eq!(exts.len(), 3);
     }
 
     #[test]
@@ -163,6 +167,7 @@ mod tests {
         assert!(found.contains(&0x0008), "Missing lifecycle");
         assert!(found.contains(&0x0009), "Missing ipc");
         assert!(found.contains(&0x000A), "Missing test");
+        assert!(found.contains(&0x000B), "Missing bank");
     }
 
     #[test]

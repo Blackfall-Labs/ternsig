@@ -10,30 +10,14 @@ mod ops_control;
 mod ops_runtime;
 
 use super::{AssembledProgram, Action, Instruction, Register};
+use super::extension::{self, BankAccess, ExecutionContext, LoopState as ExtLoopState};
+use super::registry::ExtensionRegistry;
 use crate::Signal;
 
-/// Result of executing a single instruction
-#[derive(Debug, Clone)]
-pub enum StepResult {
-    Continue,
-    Halt,
-    Break,
-    Return,
-    Yield(DomainOp),
-    Ended,
-    Error(String),
-}
+// Re-export canonical types from extension module
+pub use extension::{StepResult, DomainOp};
 
-/// Domain operations that require external execution
-#[derive(Debug, Clone)]
-pub enum DomainOp {
-    LoadWeights { register: Register, key: String },
-    StoreWeights { register: Register, key: String },
-    Consolidate,
-    ComputeError { target: i32, output: i32 },
-}
-
-/// Loop state for LOOP instruction
+/// Loop state for LOOP instruction (core ISA, u16 remaining).
 #[derive(Debug, Clone)]
 struct LoopState {
     start_pc: usize,
@@ -408,6 +392,82 @@ impl ChemicalState {
     }
 }
 
+/// Complete snapshot of interpreter register state for crash recovery.
+///
+/// Captures all persistent state (registers, chemicals, learning state).
+/// Does NOT capture ephemeral state (PC, call/loop stacks, input buffer).
+#[derive(Debug, Clone)]
+pub struct InterpreterSnapshot {
+    pub hot_regs: Vec<Option<HotBuffer>>,
+    pub cold_regs: Vec<Option<ColdBuffer>>,
+    pub param_regs: Vec<i32>,
+    pub shape_regs: Vec<Vec<usize>>,
+    pub chemical_state: ChemicalState,
+    pub current_error: i32,
+    pub babble_scale: i32,
+    pub babble_phase: usize,
+    pub output_buffer: Vec<i32>,
+    pub pressure_regs: Vec<Option<Vec<i32>>>,
+    pub checksum: u32,
+}
+
+impl InterpreterSnapshot {
+    /// Compute CRC32 checksum over snapshot content (excluding the checksum field itself).
+    pub fn compute_checksum(&self) -> u32 {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+
+        let mut hasher = DefaultHasher::new();
+
+        // Hash register counts and param values
+        self.param_regs.hash(&mut hasher);
+        self.current_error.hash(&mut hasher);
+        self.babble_scale.hash(&mut hasher);
+        self.babble_phase.hash(&mut hasher);
+        self.output_buffer.hash(&mut hasher);
+
+        // Hash chemical state
+        self.chemical_state.dopamine.hash(&mut hasher);
+        self.chemical_state.serotonin.hash(&mut hasher);
+        self.chemical_state.norepinephrine.hash(&mut hasher);
+        self.chemical_state.gaba.hash(&mut hasher);
+
+        // Hash hot register data
+        for (i, reg) in self.hot_regs.iter().enumerate() {
+            i.hash(&mut hasher);
+            if let Some(buf) = reg {
+                buf.data.hash(&mut hasher);
+                buf.shape.hash(&mut hasher);
+            }
+        }
+
+        // Hash cold register weights
+        for (i, reg) in self.cold_regs.iter().enumerate() {
+            i.hash(&mut hasher);
+            if let Some(buf) = reg {
+                for w in &buf.weights {
+                    w.polarity.hash(&mut hasher);
+                    w.magnitude.hash(&mut hasher);
+                }
+                buf.shape.hash(&mut hasher);
+            }
+        }
+
+        // Hash pressure regs
+        for (i, reg) in self.pressure_regs.iter().enumerate() {
+            i.hash(&mut hasher);
+            if let Some(data) = reg {
+                data.hash(&mut hasher);
+            }
+        }
+
+        // Hash shape regs
+        self.shape_regs.hash(&mut hasher);
+
+        hasher.finish() as u32
+    }
+}
+
 /// Ternsig Interpreter - NO FLOATS, pure integer/ternary
 pub struct Interpreter {
     program: Vec<Instruction>,
@@ -427,6 +487,14 @@ pub struct Interpreter {
     current_error: i32,
     /// Chemical state for neuromodulator gating
     pub chemical_state: ChemicalState,
+    /// Extension registry for dispatching non-core instructions.
+    registry: ExtensionRegistry,
+    /// Extension loop stack (uses ExtLoopState with u32 remaining).
+    /// Separate from core ISA loop_stack which uses u16 remaining.
+    ext_loop_stack: Vec<ExtLoopState>,
+    /// Optional bank cache for inline bank execution (1.3).
+    /// When set, bank extension ops execute locally instead of yielding.
+    bank_cache: Option<Box<dyn BankAccess>>,
 }
 
 impl Interpreter {
@@ -448,11 +516,40 @@ impl Interpreter {
             babble_phase: 0,
             current_error: 0,
             chemical_state: ChemicalState::baseline(),
+            registry: ExtensionRegistry::new(),
+            ext_loop_stack: Vec::new(),
+            bank_cache: None,
         }
+    }
+
+    /// Create an interpreter with a pre-configured extension registry.
+    pub fn with_registry(registry: ExtensionRegistry) -> Self {
+        let mut interp = Self::new();
+        interp.registry = registry;
+        interp
+    }
+
+    /// Set the bank cache for inline bank execution.
+    /// When set, bank extension ops execute locally instead of yielding.
+    pub fn set_bank_cache(&mut self, cache: Box<dyn BankAccess>) {
+        self.bank_cache = Some(cache);
+    }
+
+    /// Remove the bank cache. Bank ops will yield DomainOps.
+    pub fn clear_bank_cache(&mut self) {
+        self.bank_cache = None;
     }
 
     pub fn from_program(program: &AssembledProgram) -> Self {
         let mut interp = Self::new();
+        interp.program = program.instructions.clone();
+        interp.allocate_registers(&program.registers);
+        interp
+    }
+
+    /// Create an interpreter from a program with a pre-configured extension registry.
+    pub fn from_program_with_registry(program: &AssembledProgram, registry: ExtensionRegistry) -> Self {
+        let mut interp = Self::with_registry(registry);
         interp.program = program.instructions.clone();
         interp.allocate_registers(&program.registers);
         interp
@@ -535,11 +632,28 @@ impl Interpreter {
 
         // Extension dispatch: non-core instructions go through the registry
         if instr.is_extension() {
-            // TODO: Phase 2 — dispatch via ExtensionRegistry
-            return StepResult::Error(format!(
-                "Extension 0x{:04X} not yet supported (opcode 0x{:04X})",
-                instr.ext_id, instr.opcode
-            ));
+            let ext_id = instr.ext_id;
+            let opcode = instr.opcode;
+            let operands = instr.operands;
+            let mut ctx = ExecutionContext {
+                hot_regs: &mut self.hot_regs,
+                cold_regs: &mut self.cold_regs,
+                param_regs: &mut self.param_regs,
+                shape_regs: &mut self.shape_regs,
+                pc: &mut self.pc,
+                call_stack: &mut self.call_stack,
+                loop_stack: &mut self.ext_loop_stack,
+                input_buffer: &self.input_buffer,
+                output_buffer: &mut self.output_buffer,
+                target_buffer: &self.target_buffer,
+                chemical_state: &mut self.chemical_state,
+                current_error: &mut self.current_error,
+                babble_scale: &mut self.babble_scale,
+                babble_phase: &mut self.babble_phase,
+                pressure_regs: &mut self.pressure_regs,
+                bank_cache: self.bank_cache.as_deref_mut(),
+            };
+            return self.registry.dispatch(ext_id, opcode, operands, &mut ctx);
         }
 
         // Core ISA dispatch (ext_id == 0x0000)
@@ -683,6 +797,132 @@ impl Interpreter {
         self.load_input_i32(input);
         self.run()?;
         Ok(self.output_buffer.clone())
+    }
+
+    /// Build an ExecutionContext borrowing the interpreter's register state.
+    ///
+    /// Used internally for extension dispatch and externally by `run_with_host()`.
+    fn build_execution_context(&mut self) -> ExecutionContext<'_> {
+        ExecutionContext {
+            hot_regs: &mut self.hot_regs,
+            cold_regs: &mut self.cold_regs,
+            param_regs: &mut self.param_regs,
+            shape_regs: &mut self.shape_regs,
+            pc: &mut self.pc,
+            call_stack: &mut self.call_stack,
+            loop_stack: &mut self.ext_loop_stack,
+            input_buffer: &self.input_buffer,
+            output_buffer: &mut self.output_buffer,
+            target_buffer: &self.target_buffer,
+            chemical_state: &mut self.chemical_state,
+            current_error: &mut self.current_error,
+            babble_scale: &mut self.babble_scale,
+            babble_phase: &mut self.babble_phase,
+            pressure_regs: &mut self.pressure_regs,
+            bank_cache: self.bank_cache.as_deref_mut(),
+        }
+    }
+
+    /// Step until a yield, halt, end, or error.
+    ///
+    /// Returns the StepResult so the host can handle DomainOp yields.
+    /// Continues through `Continue`, `Break`, and `Return` internally.
+    pub fn run_until_yield(&mut self) -> StepResult {
+        loop {
+            match self.step() {
+                StepResult::Continue => continue,
+                StepResult::Break => continue,
+                StepResult::Return => continue,
+                other => return other,
+            }
+        }
+    }
+
+    /// Run with a host callback for DomainOp fulfillment.
+    ///
+    /// The callback receives the DomainOp and an ExecutionContext for
+    /// reading/writing registers. Return `Ok(true)` to continue execution,
+    /// `Ok(false)` to halt cleanly, or `Err(msg)` to abort with error.
+    pub fn run_with_host<F>(&mut self, mut handler: F) -> Result<(), String>
+    where
+        F: FnMut(DomainOp, &mut ExecutionContext) -> Result<bool, String>,
+    {
+        loop {
+            match self.step() {
+                StepResult::Continue | StepResult::Break | StepResult::Return => continue,
+                StepResult::Halt | StepResult::Ended => return Ok(()),
+                StepResult::Error(e) => return Err(e),
+                StepResult::Yield(op) => {
+                    let mut ctx = self.build_execution_context();
+                    match handler(op, &mut ctx) {
+                        Ok(true) => continue,
+                        Ok(false) => return Ok(()),
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get a reference to the extension registry.
+    pub fn registry(&self) -> &ExtensionRegistry {
+        &self.registry
+    }
+
+    /// Capture a snapshot of all interpreter register state.
+    ///
+    /// Does NOT include program code (the host knows which program was loaded).
+    /// Does NOT include PC/call stack/loop stack (ephemeral execution state).
+    /// Execution restarts from program start with restored register state.
+    pub fn snapshot(&self) -> InterpreterSnapshot {
+        let mut snap = InterpreterSnapshot {
+            hot_regs: self.hot_regs.clone(),
+            cold_regs: self.cold_regs.clone(),
+            param_regs: self.param_regs.clone(),
+            shape_regs: self.shape_regs.clone(),
+            chemical_state: self.chemical_state,
+            current_error: self.current_error,
+            babble_scale: self.babble_scale,
+            babble_phase: self.babble_phase,
+            output_buffer: self.output_buffer.clone(),
+            pressure_regs: self.pressure_regs.clone(),
+            checksum: 0,
+        };
+        snap.checksum = snap.compute_checksum();
+        snap
+    }
+
+    /// Restore interpreter state from a snapshot.
+    ///
+    /// Program must already be loaded. Execution restarts from program start
+    /// with the restored register state.
+    pub fn restore(&mut self, snapshot: &InterpreterSnapshot) -> Result<(), String> {
+        let expected = snapshot.compute_checksum();
+        if snapshot.checksum != expected {
+            return Err(format!(
+                "Snapshot checksum mismatch: stored={}, computed={}",
+                snapshot.checksum, expected
+            ));
+        }
+
+        self.hot_regs = snapshot.hot_regs.clone();
+        self.cold_regs = snapshot.cold_regs.clone();
+        self.param_regs = snapshot.param_regs.clone();
+        self.shape_regs = snapshot.shape_regs.clone();
+        self.chemical_state = snapshot.chemical_state;
+        self.current_error = snapshot.current_error;
+        self.babble_scale = snapshot.babble_scale;
+        self.babble_phase = snapshot.babble_phase;
+        self.output_buffer = snapshot.output_buffer.clone();
+        self.pressure_regs = snapshot.pressure_regs.clone();
+
+        // Reset ephemeral execution state
+        self.pc = 0;
+        self.call_stack.clear();
+        self.loop_stack.clear();
+        self.ext_loop_stack.clear();
+
+        Ok(())
     }
 
     // === Accessors ===

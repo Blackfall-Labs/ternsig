@@ -38,6 +38,7 @@
 //! ```
 
 use super::{assemble, AssembledProgram, ColdBuffer, Interpreter};
+use super::registry::ExtensionRegistry;
 use crate::Signal;
 use anyhow::{Context, Result};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -354,6 +355,28 @@ impl ReloadableInterpreter {
             assemble(&source).with_context(|| format!("Failed to assemble {}", path.display()))?;
 
         let interpreter = Interpreter::from_program(&program);
+        let mut manager = HotReloadManager::new(path)?;
+        manager.current_program = Some(program);
+
+        Ok(Self {
+            interpreter,
+            manager,
+            reload_history: Vec::new(),
+            max_history: 100,
+        })
+    }
+
+    /// Create from a .ternsig file path with a pre-configured extension registry.
+    pub fn from_file_with_registry(path: impl AsRef<Path>, registry: ExtensionRegistry) -> Result<Self> {
+        let path = path.as_ref();
+
+        let source = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+
+        let program =
+            assemble(&source).with_context(|| format!("Failed to assemble {}", path.display()))?;
+
+        let interpreter = Interpreter::from_program_with_registry(&program, registry);
         let mut manager = HotReloadManager::new(path)?;
         manager.current_program = Some(program);
 

@@ -290,6 +290,7 @@ mod tests {
             babble_scale: &mut babble_scale,
             babble_phase: &mut babble_phase,
             pressure_regs: &mut pressure_regs,
+            bank_cache: None,
         };
 
         // RELU: H0 = relu(H1)

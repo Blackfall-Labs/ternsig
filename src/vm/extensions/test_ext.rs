@@ -337,6 +337,7 @@ mod tests {
             babble_scale,
             babble_phase,
             pressure_regs,
+            bank_cache: None,
         }
     }
 

@@ -4,7 +4,7 @@
 //! allocate/free registers. This is the structural plasticity enabler.
 
 use crate::vm::extension::{
-    ExecutionContext, Extension, InstructionMeta, OperandPattern, StepResult,
+    DomainOp, ExecutionContext, Extension, InstructionMeta, OperandPattern, StepResult,
 };
 use crate::vm::interpreter::{ColdBuffer, HotBuffer, SignalTemperature};
 use crate::vm::register::Register;
@@ -85,6 +85,18 @@ impl ArchExtension {
                     operand_pattern: OperandPattern::RegImm8,
                     description: "Set activation function for a layer",
                 },
+                InstructionMeta {
+                    opcode: 0x000B,
+                    mnemonic: "ALLOC_DYNAMIC",
+                    operand_pattern: OperandPattern::Custom("[target:1][bank:1][size_hi:1][size_lo:1]"),
+                    description: "Request dynamic register allocation from kernel. Yields AllocRegister.",
+                },
+                InstructionMeta {
+                    opcode: 0x000C,
+                    mnemonic: "FREE_DYNAMIC",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Release dynamically allocated register. Yields FreeRegister.",
+                },
             ],
         }
     }
@@ -125,6 +137,21 @@ impl Extension for ArchExtension {
             0x0008 => execute_freeze_layer(operands, ctx),
             0x0009 => execute_unfreeze_layer(operands, ctx),
             0x000A => execute_set_activation(operands, ctx),
+            // ALLOC_DYNAMIC [target:1][bank:1][size_hi:1][size_lo:1]
+            // Yields to kernel for managed register pool allocation.
+            // bank: 0=Hot, 1=Cold, 2=Param, 3=Shape
+            0x000B => {
+                let target = Register(operands[0]);
+                let bank = operands[1];
+                let size = ((operands[2] as u16) << 8) | (operands[3] as u16);
+                StepResult::Yield(DomainOp::AllocRegister { target, bank, size })
+            }
+            // FREE_DYNAMIC [reg:1][_:3]
+            // Yields to kernel to release a dynamically allocated register.
+            0x000C => {
+                let register = Register(operands[0]);
+                StepResult::Yield(DomainOp::FreeRegister { register })
+            }
             _ => StepResult::Error(format!("tvmr.arch: unknown opcode 0x{:04X}", opcode)),
         }
     }

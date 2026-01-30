@@ -294,8 +294,7 @@ impl Extension for OrchestrationExtension {
             0x000B => {
                 let reg = Register(operands[0]);
                 let region_id = operands[1];
-                // Region status requires host knowledge — yield
-                StepResult::Yield(DomainOp::RegionFire { target: reg, region_id })
+                StepResult::Yield(DomainOp::RegionStatus { target: reg, region_id })
             }
 
             // REGION_ENABLE: [region_id:1][_:3]
@@ -371,6 +370,7 @@ mod tests {
             pc, call_stack, loop_stack, input_buffer,
             output_buffer, target_buffer, chemical_state,
             current_error, babble_scale, babble_phase, pressure_regs,
+            bank_cache: None,
         }
     }
 

@@ -844,7 +844,20 @@ impl Assembler {
                 ))
             })?;
 
-        // Parse operands into 4 bytes
+        // Try extension-specific operand assembly first
+        let upper_mnemonic = mnemonic.to_uppercase();
+        let exts = super::extensions::standard_extensions();
+        for ext in &exts {
+            if ext.ext_id() == ext_id {
+                if let Some(result) = ext.assemble_operands(&upper_mnemonic, ops) {
+                    let operands = result.map_err(|e| self.error(e))?;
+                    return Ok(Instruction::ext(ext_id, opcode, operands));
+                }
+                break;
+            }
+        }
+
+        // Fall back to generic operand parsing
         let mut operands = [0u8; 4];
         for (i, op) in ops.iter().take(4).enumerate() {
             if let Ok(reg) = self.parse_register_operand(Some(op)) {

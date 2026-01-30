@@ -68,6 +68,36 @@ impl LifecycleExtension {
                     operand_pattern: OperandPattern::Imm8,
                     description: "Halt a specific brain region",
                 },
+                InstructionMeta {
+                    opcode: 0x0008,
+                    mnemonic: "TXN_BEGIN",
+                    operand_pattern: OperandPattern::Imm8,
+                    description: "Begin a persistence transaction",
+                },
+                InstructionMeta {
+                    opcode: 0x0009,
+                    mnemonic: "TXN_COMMIT",
+                    operand_pattern: OperandPattern::Imm8,
+                    description: "Commit all buffered writes atomically",
+                },
+                InstructionMeta {
+                    opcode: 0x000A,
+                    mnemonic: "TXN_ROLLBACK",
+                    operand_pattern: OperandPattern::Imm8,
+                    description: "Discard all buffered writes in transaction",
+                },
+                InstructionMeta {
+                    opcode: 0x000B,
+                    mnemonic: "LOAD_WEIGHTS",
+                    operand_pattern: OperandPattern::RegImm8,
+                    description: "Load weights from persistent storage by key_id (from param register)",
+                },
+                InstructionMeta {
+                    opcode: 0x000C,
+                    mnemonic: "STORE_WEIGHTS",
+                    operand_pattern: OperandPattern::RegImm8,
+                    description: "Store weights to persistent storage by key_id (from param register)",
+                },
             ],
         }
     }
@@ -94,7 +124,7 @@ impl Extension for LifecycleExtension {
         &self,
         opcode: u16,
         operands: [u8; 4],
-        _ctx: &mut ExecutionContext,
+        ctx: &mut ExecutionContext,
     ) -> StepResult {
         match opcode {
             // PHASE_READ [target:1][_:3]
@@ -156,6 +186,45 @@ impl Extension for LifecycleExtension {
                 StepResult::Yield(DomainOp::HaltRegion { region_id })
             }
 
+            // TXN_BEGIN [txn_id:1][_:3]
+            // Host begins buffering all persistence writes.
+            0x0008 => {
+                let txn_id = operands[0];
+                StepResult::Yield(DomainOp::TxnBegin { txn_id })
+            }
+
+            // TXN_COMMIT [txn_id:1][_:3]
+            // Host commits all buffered writes atomically.
+            0x0009 => {
+                let txn_id = operands[0];
+                StepResult::Yield(DomainOp::TxnCommit { txn_id })
+            }
+
+            // TXN_ROLLBACK [txn_id:1][_:3]
+            // Host discards all buffered writes.
+            0x000A => {
+                let txn_id = operands[0];
+                StepResult::Yield(DomainOp::TxnRollback { txn_id })
+            }
+
+            // LOAD_WEIGHTS [reg:1][key_param:1][_:2]
+            // Host loads weights from persistent storage using key_id from P[key_param].
+            0x000B => {
+                let register = Register(operands[0]);
+                let key_param_idx = operands[1] as usize;
+                let key_id = ctx.param_regs.get(key_param_idx).copied().unwrap_or(0);
+                StepResult::Yield(DomainOp::LoadWeights { register, key_id })
+            }
+
+            // STORE_WEIGHTS [reg:1][key_param:1][_:2]
+            // Host stores weights to persistent storage using key_id from P[key_param].
+            0x000C => {
+                let register = Register(operands[0]);
+                let key_param_idx = operands[1] as usize;
+                let key_id = ctx.param_regs.get(key_param_idx).copied().unwrap_or(0);
+                StepResult::Yield(DomainOp::StoreWeights { register, key_id })
+            }
+
             _ => StepResult::Error(format!(
                 "tvmr.lifecycle: unknown opcode 0x{:04X}",
                 opcode
@@ -174,9 +243,14 @@ mod tests {
         let ext = LifecycleExtension::new();
         assert_eq!(ext.ext_id(), 0x0008);
         assert_eq!(ext.name(), "tvmr.lifecycle");
-        assert_eq!(ext.instructions().len(), 8);
+        assert_eq!(ext.instructions().len(), 13);
         assert_eq!(ext.instructions()[0].mnemonic, "PHASE_READ");
         assert_eq!(ext.instructions()[7].mnemonic, "HALT_REGION");
+        assert_eq!(ext.instructions()[8].mnemonic, "TXN_BEGIN");
+        assert_eq!(ext.instructions()[9].mnemonic, "TXN_COMMIT");
+        assert_eq!(ext.instructions()[10].mnemonic, "TXN_ROLLBACK");
+        assert_eq!(ext.instructions()[11].mnemonic, "LOAD_WEIGHTS");
+        assert_eq!(ext.instructions()[12].mnemonic, "STORE_WEIGHTS");
     }
 
     macro_rules! setup_ctx {
@@ -241,6 +315,7 @@ mod tests {
             babble_scale,
             babble_phase,
             pressure_regs,
+            bank_cache: None,
         }
     }
 
@@ -409,8 +484,8 @@ mod tests {
 
         let ext = LifecycleExtension::new();
 
-        // Verify all 8 opcodes yield (none return Continue)
-        for opcode in 0x0000..=0x0007u16 {
+        // Verify all 13 opcodes yield (none return Continue)
+        for opcode in 0x0000..=0x000Cu16 {
             let result = ext.execute(opcode, [0x00, 0x01, 0, 0], &mut ctx);
             match result {
                 StepResult::Yield(_) => {} // correct

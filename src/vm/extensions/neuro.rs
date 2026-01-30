@@ -113,6 +113,36 @@ impl NeuroExtension {
                     operand_pattern: OperandPattern::RegReg,
                     description: "Compute novelty z-scores from region energies. Yields NoveltyScore.",
                 },
+                InstructionMeta {
+                    opcode: 0x000F,
+                    mnemonic: "FIELD_SLICE_READ",
+                    operand_pattern: OperandPattern::Custom("[target:1][field_id:1][slice:1][_:1]"),
+                    description: "Read specific field slice into H[target]. Yields FieldSliceRead.",
+                },
+                InstructionMeta {
+                    opcode: 0x0010,
+                    mnemonic: "FIELD_SLICE_WRITE",
+                    operand_pattern: OperandPattern::Custom("[source:1][field_id:1][slice:1][_:1]"),
+                    description: "Write H[source] to specific field slice. Yields FieldSliceWrite.",
+                },
+                InstructionMeta {
+                    opcode: 0x0011,
+                    mnemonic: "COACT_RECORD",
+                    operand_pattern: OperandPattern::RegReg,
+                    description: "Record co-activation between two registers. Yields CoActivation.",
+                },
+                InstructionMeta {
+                    opcode: 0x0012,
+                    mnemonic: "COACT_READ",
+                    operand_pattern: OperandPattern::RegReg,
+                    description: "Read co-activation matrix into H[target]. Yields CoActivationRead.",
+                },
+                InstructionMeta {
+                    opcode: 0x0013,
+                    mnemonic: "COACT_RESET",
+                    operand_pattern: OperandPattern::None,
+                    description: "Reset all co-activation counters. Yields CoActivationReset.",
+                },
             ],
         }
     }
@@ -220,6 +250,36 @@ impl Extension for NeuroExtension {
                 let dst = Register(operands[0]);
                 let src = Register(operands[1]);
                 StepResult::Yield(DomainOp::NoveltyScore { target: dst, source: src })
+            }
+            // FIELD_SLICE_READ: [target:1][field_id:1][slice:1][_:1]
+            0x000F => {
+                let target = Register(operands[0]);
+                let field_id = operands[1];
+                let slice_index = operands[2];
+                StepResult::Yield(DomainOp::FieldSliceRead { target, field_id, slice_index })
+            }
+            // FIELD_SLICE_WRITE: [source:1][field_id:1][slice:1][_:1]
+            0x0010 => {
+                let source = Register(operands[0]);
+                let field_id = operands[1];
+                let slice_index = operands[2];
+                StepResult::Yield(DomainOp::FieldSliceWrite { source, field_id, slice_index })
+            }
+            // COACT_RECORD: [src_a:1][src_b:1][_:2]
+            0x0011 => {
+                let source_a = Register(operands[0]);
+                let source_b = Register(operands[1]);
+                StepResult::Yield(DomainOp::CoActivation { source_a, source_b })
+            }
+            // COACT_READ: [target:1][source:1][_:2]
+            0x0012 => {
+                let target = Register(operands[0]);
+                let source = Register(operands[1]);
+                StepResult::Yield(DomainOp::CoActivationRead { target, source })
+            }
+            // COACT_RESET: [_:4]
+            0x0013 => {
+                StepResult::Yield(DomainOp::CoActivationReset)
             }
             _ => StepResult::Error(format!("tvmr.neuro: unknown opcode 0x{:04X}", opcode)),
         }
@@ -343,6 +403,7 @@ mod tests {
             pc, call_stack, loop_stack, input_buffer,
             output_buffer, target_buffer, chemical_state,
             current_error, babble_scale, babble_phase, pressure_regs,
+            bank_cache: None,
         }
     }
 
@@ -351,7 +412,7 @@ mod tests {
         let ext = NeuroExtension::new();
         assert_eq!(ext.ext_id(), 0x0005);
         assert_eq!(ext.name(), "tvmr.neuro");
-        assert_eq!(ext.instructions().len(), 15);
+        assert_eq!(ext.instructions().len(), 20);
     }
 
     #[test]
@@ -531,6 +592,140 @@ mod tests {
     }
 
     #[test]
+    fn test_field_slice_read_yields() {
+        let ext = NeuroExtension::new();
+        let (
+            mut hot_regs, mut cold_regs, mut param_regs, mut shape_regs,
+            mut pc, mut call_stack, mut loop_stack, input_buffer,
+            mut output_buffer, target_buffer, mut chemical_state,
+            mut current_error, mut babble_scale, mut babble_phase, mut pressure_regs,
+        ) = setup_ctx!();
+        let mut ctx = make_ctx(
+            &mut hot_regs, &mut cold_regs, &mut param_regs, &mut shape_regs,
+            &mut pc, &mut call_stack, &mut loop_stack, &input_buffer,
+            &mut output_buffer, &target_buffer, &mut chemical_state,
+            &mut current_error, &mut babble_scale, &mut babble_phase, &mut pressure_regs,
+        );
+
+        // FIELD_SLICE_READ H0, field=2, slice=5
+        let result = ext.execute(0x000F, [0x00, 0x02, 0x05, 0x00], &mut ctx);
+        match result {
+            StepResult::Yield(DomainOp::FieldSliceRead { target, field_id, slice_index }) => {
+                assert_eq!(target, Register(0x00));
+                assert_eq!(field_id, 2);
+                assert_eq!(slice_index, 5);
+            }
+            other => panic!("Expected Yield(FieldSliceRead), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_field_slice_write_yields() {
+        let ext = NeuroExtension::new();
+        let (
+            mut hot_regs, mut cold_regs, mut param_regs, mut shape_regs,
+            mut pc, mut call_stack, mut loop_stack, input_buffer,
+            mut output_buffer, target_buffer, mut chemical_state,
+            mut current_error, mut babble_scale, mut babble_phase, mut pressure_regs,
+        ) = setup_ctx!();
+        let mut ctx = make_ctx(
+            &mut hot_regs, &mut cold_regs, &mut param_regs, &mut shape_regs,
+            &mut pc, &mut call_stack, &mut loop_stack, &input_buffer,
+            &mut output_buffer, &target_buffer, &mut chemical_state,
+            &mut current_error, &mut babble_scale, &mut babble_phase, &mut pressure_regs,
+        );
+
+        // FIELD_SLICE_WRITE H3, field=1, slice=7
+        let result = ext.execute(0x0010, [0x03, 0x01, 0x07, 0x00], &mut ctx);
+        match result {
+            StepResult::Yield(DomainOp::FieldSliceWrite { source, field_id, slice_index }) => {
+                assert_eq!(source, Register(0x03));
+                assert_eq!(field_id, 1);
+                assert_eq!(slice_index, 7);
+            }
+            other => panic!("Expected Yield(FieldSliceWrite), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_coact_record_yields() {
+        let ext = NeuroExtension::new();
+        let (
+            mut hot_regs, mut cold_regs, mut param_regs, mut shape_regs,
+            mut pc, mut call_stack, mut loop_stack, input_buffer,
+            mut output_buffer, target_buffer, mut chemical_state,
+            mut current_error, mut babble_scale, mut babble_phase, mut pressure_regs,
+        ) = setup_ctx!();
+        let mut ctx = make_ctx(
+            &mut hot_regs, &mut cold_regs, &mut param_regs, &mut shape_regs,
+            &mut pc, &mut call_stack, &mut loop_stack, &input_buffer,
+            &mut output_buffer, &target_buffer, &mut chemical_state,
+            &mut current_error, &mut babble_scale, &mut babble_phase, &mut pressure_regs,
+        );
+
+        // COACT_RECORD H0, H1
+        let result = ext.execute(0x0011, [0x00, 0x01, 0x00, 0x00], &mut ctx);
+        match result {
+            StepResult::Yield(DomainOp::CoActivation { source_a, source_b }) => {
+                assert_eq!(source_a, Register(0x00));
+                assert_eq!(source_b, Register(0x01));
+            }
+            other => panic!("Expected Yield(CoActivation), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_coact_read_yields() {
+        let ext = NeuroExtension::new();
+        let (
+            mut hot_regs, mut cold_regs, mut param_regs, mut shape_regs,
+            mut pc, mut call_stack, mut loop_stack, input_buffer,
+            mut output_buffer, target_buffer, mut chemical_state,
+            mut current_error, mut babble_scale, mut babble_phase, mut pressure_regs,
+        ) = setup_ctx!();
+        let mut ctx = make_ctx(
+            &mut hot_regs, &mut cold_regs, &mut param_regs, &mut shape_regs,
+            &mut pc, &mut call_stack, &mut loop_stack, &input_buffer,
+            &mut output_buffer, &target_buffer, &mut chemical_state,
+            &mut current_error, &mut babble_scale, &mut babble_phase, &mut pressure_regs,
+        );
+
+        // COACT_READ H2, H0
+        let result = ext.execute(0x0012, [0x02, 0x00, 0x00, 0x00], &mut ctx);
+        match result {
+            StepResult::Yield(DomainOp::CoActivationRead { target, source }) => {
+                assert_eq!(target, Register(0x02));
+                assert_eq!(source, Register(0x00));
+            }
+            other => panic!("Expected Yield(CoActivationRead), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_coact_reset_yields() {
+        let ext = NeuroExtension::new();
+        let (
+            mut hot_regs, mut cold_regs, mut param_regs, mut shape_regs,
+            mut pc, mut call_stack, mut loop_stack, input_buffer,
+            mut output_buffer, target_buffer, mut chemical_state,
+            mut current_error, mut babble_scale, mut babble_phase, mut pressure_regs,
+        ) = setup_ctx!();
+        let mut ctx = make_ctx(
+            &mut hot_regs, &mut cold_regs, &mut param_regs, &mut shape_regs,
+            &mut pc, &mut call_stack, &mut loop_stack, &input_buffer,
+            &mut output_buffer, &target_buffer, &mut chemical_state,
+            &mut current_error, &mut babble_scale, &mut babble_phase, &mut pressure_regs,
+        );
+
+        // COACT_RESET
+        let result = ext.execute(0x0013, [0x00, 0x00, 0x00, 0x00], &mut ctx);
+        match result {
+            StepResult::Yield(DomainOp::CoActivationReset) => {}
+            other => panic!("Expected Yield(CoActivationReset), got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_all_yield_ops_produce_correct_variants() {
         let ext = NeuroExtension::new();
         let (
@@ -551,6 +746,7 @@ mod tests {
             0x0000, 0x0001, 0x0002, 0x0003, 0x0004,
             0x0005, 0x0006, 0x0007, 0x0008,
             0x000B, 0x000C, 0x000D, 0x000E,
+            0x000F, 0x0010, 0x0011, 0x0012, 0x0013,
         ];
         for &opcode in &yield_opcodes {
             let result = ext.execute(opcode, [0x00, 0x00, 0x00, 0x00], &mut ctx);

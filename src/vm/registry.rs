@@ -98,6 +98,20 @@ impl ExtensionRegistry {
         }
     }
 
+    /// Create a registry pre-loaded with all standard TVMR extensions.
+    ///
+    /// Registers all 10 standard extensions (tensor, ternary, activation,
+    /// learning, neuro, arch, orchestration, lifecycle, ipc, test).
+    pub fn with_standard_extensions() -> Self {
+        let mut reg = Self::new();
+        for ext in super::extensions::standard_extensions() {
+            if let Err(e) = reg.register(ext) {
+                log::error!("Failed to register standard extension: {}", e);
+            }
+        }
+        reg
+    }
+
     /// Register an extension. Returns warnings about mnemonic conflicts.
     ///
     /// # Errors

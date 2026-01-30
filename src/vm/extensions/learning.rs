@@ -162,6 +162,12 @@ impl LearningExtension {
                     operand_pattern: OperandPattern::None,
                     description: "Consolidate hot → cold (Thermogram)",
                 },
+                InstructionMeta {
+                    opcode: 0x0014,
+                    mnemonic: "DISCARD_CHECKPOINT",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Discard a persisted checkpoint (cleanup after successful op)",
+                },
             ],
         }
     }
@@ -211,6 +217,10 @@ impl Extension for LearningExtension {
             0x0011 => self.execute_checkpoint_weights(operands, ctx),
             0x0012 => self.execute_rollback_weights(operands, ctx),
             0x0013 => StepResult::Yield(DomainOp::Consolidate),
+            0x0014 => {
+                let register = Register(operands[0]);
+                StepResult::Yield(DomainOp::CheckpointDiscard { register })
+            }
             _ => StepResult::Error(format!("tvmr.learning: unknown opcode 0x{:04X}", opcode)),
         }
     }
@@ -572,24 +582,30 @@ impl LearningExtension {
 
     /// CHECKPOINT_WEIGHTS [cold_reg:1][_:3]
     /// Save a snapshot of the cold register for potential rollback.
+    /// Also yields CheckpointSave so the host can persist to disk.
     fn execute_checkpoint_weights(&self, ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
         let idx = Register(ops[0]).index();
+        let register = Register(ops[0]);
 
         let cold = match &ctx.cold_regs[idx] {
             Some(buf) => buf.clone(),
             None => return StepResult::Error(format!("C{} not allocated", idx)),
         };
 
+        // In-memory cache (fast path for rollback within same session)
         let mut checkpoints = self.checkpoints.lock().unwrap();
         checkpoints[idx] = Some(cold);
 
-        StepResult::Continue
+        // Yield to host for crash-safe persistence
+        StepResult::Yield(DomainOp::CheckpointSave { register })
     }
 
     /// ROLLBACK_WEIGHTS [cold_reg:1][_:3]
-    /// Restore cold register from checkpoint.
+    /// Restore cold register from checkpoint. Tries in-memory first,
+    /// then yields CheckpointRestore for host to load from disk.
     fn execute_rollback_weights(&self, ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
         let idx = Register(ops[0]).index();
+        let register = Register(ops[0]);
 
         let mut checkpoints = self.checkpoints.lock().unwrap();
         match checkpoints[idx].take() {
@@ -597,7 +613,8 @@ impl LearningExtension {
                 ctx.cold_regs[idx] = Some(saved);
                 StepResult::Continue
             }
-            None => StepResult::Error(format!("No checkpoint for C{}", idx)),
+            // No in-memory checkpoint (e.g., post-crash). Ask host for disk restore.
+            None => StepResult::Yield(DomainOp::CheckpointRestore { register }),
         }
     }
 }

@@ -18,6 +18,7 @@ use super::register::Register;
 use std::fmt;
 
 /// Result of executing a single instruction.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum StepResult {
     /// Continue to next instruction.
@@ -45,15 +46,18 @@ pub enum StepResult {
 /// Convention: operations that READ expect the host to write results into
 /// the register specified by `target`. Operations that WRITE read from
 /// the register specified by `source`.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum DomainOp {
     // =========================================================================
     // Persistence (existing)
     // =========================================================================
-    /// Load weights from persistent storage.
-    LoadWeights { register: Register, key: String },
-    /// Store weights to persistent storage.
-    StoreWeights { register: Register, key: String },
+    /// Load weights from persistent storage by key identifier.
+    /// key_id is resolved to a thermogram key string by the host.
+    LoadWeights { register: Register, key_id: i32 },
+    /// Store weights to persistent storage by key identifier.
+    /// key_id is resolved to a thermogram key string by the host.
+    StoreWeights { register: Register, key_id: i32 },
     /// Trigger consolidation (hot → cold thermogram).
     Consolidate,
     /// Compute error between target and output.
@@ -162,6 +166,140 @@ pub enum DomainOp {
     BarrierWait { barrier_id: u8 },
     /// Atomic compare-and-swap.
     AtomicCas { target: Register, expected: Register, desired: Register },
+
+    // =========================================================================
+    // Orchestration: Region status (0x0007)
+    // =========================================================================
+    /// Query region status. Host writes into target H[reg][0]: 0=idle, 1=active, 2=firing.
+    RegionStatus { target: Register, region_id: u8 },
+
+    // =========================================================================
+    // Crash Resistance: Checkpoints (1.1)
+    // =========================================================================
+    /// Persist a checkpoint of cold register weights.
+    /// Host writes to crash-safe storage (temp+rename or WAL).
+    CheckpointSave { register: Register },
+    /// Restore cold register from persisted checkpoint.
+    /// Host reads from crash-safe storage. Returns error if no checkpoint exists.
+    CheckpointRestore { register: Register },
+    /// Discard a persisted checkpoint (cleanup after successful operation).
+    CheckpointDiscard { register: Register },
+
+    // =========================================================================
+    // Crash Resistance: Transactions (1.1)
+    // =========================================================================
+    /// Begin a persistence transaction. All subsequent SaveThermo/CheckpointSave
+    /// operations are buffered until TxnCommit or discarded on TxnRollback.
+    TxnBegin { txn_id: u8 },
+    /// Commit all buffered writes in the transaction atomically.
+    TxnCommit { txn_id: u8 },
+    /// Discard all buffered writes in the transaction.
+    TxnRollback { txn_id: u8 },
+
+    // =========================================================================
+    // Bank: Distributed Representational Memory (0x000B)
+    // =========================================================================
+    /// Query bank by vector similarity. Host reads query vector from source
+    /// register, runs sparse cosine similarity on the named bank, writes
+    /// top_k results (EntryId + score pairs) into target register.
+    ///
+    /// Register layout for results:
+    ///   H[target][0] = result count (0..top_k)
+    ///   H[target][1] = entry_0 score (i32, scaled x256)
+    ///   H[target][2] = entry_0 id_high (upper 32 bits of EntryId)
+    ///   H[target][3] = entry_0 id_low (lower 32 bits of EntryId)
+    ///   H[target][4] = entry_1 score ...
+    BankQuery { target: Register, source: Register, bank_slot: u8, top_k: u8 },
+
+    /// Write entry to bank. Host reads Signal vector from source register,
+    /// creates a BankEntry, inserts into bank. Returns new EntryId in target:
+    ///   H[target][0] = entry_id_high
+    ///   H[target][1] = entry_id_low
+    BankWrite { target: Register, source: Register, bank_slot: u8 },
+
+    /// Load full entry vector into register for pattern completion.
+    /// Host reads EntryId from source (H[src][0..1] = id_high, id_low),
+    /// loads the entry's full Signal vector into target as i32 values.
+    BankLoad { target: Register, source: Register, bank_slot: u8 },
+
+    /// Add typed edge between two entries. Host reads source and destination
+    /// BankRefs from register:
+    ///   H[src][0] = from_entry_id_high
+    ///   H[src][1] = from_entry_id_low
+    ///   H[src][2] = to_bank_slot (u8 in i32)
+    ///   H[src][3] = to_entry_id_high
+    ///   H[src][4] = to_entry_id_low
+    ///   H[src][5] = edge_weight (u8 in i32)
+    BankLink { source: Register, edge_type: u8, bank_slot: u8 },
+
+    /// Traverse edges from an entry. Host reads starting EntryId from source,
+    /// follows edges of specified type up to depth, writes discovered BankRefs
+    /// into target register:
+    ///   H[target][0] = result count
+    ///   H[target][1] = ref_0 bank_slot
+    ///   H[target][2] = ref_0 entry_id_high
+    ///   H[target][3] = ref_0 entry_id_low ...
+    BankTraverse { target: Register, source: Register, bank_slot: u8, edge_type: u8, depth: u8 },
+
+    /// Touch (access) an entry to update its last_accessed_tick and access_count.
+    /// Host reads EntryId from source (H[src][0..1] = id_high, id_low).
+    BankTouch { source: Register, bank_slot: u8 },
+
+    /// Delete an entry from the bank.
+    /// Host reads EntryId from source (H[src][0..1] = id_high, id_low).
+    BankDelete { source: Register, bank_slot: u8 },
+
+    /// Get entry count for a bank. Host writes count into H[target][0].
+    BankCount { target: Register, bank_slot: u8 },
+
+    // =========================================================================
+    // Dynamic Register Allocation (1.2)
+    // =========================================================================
+    /// Request dynamic register allocation from kernel-managed pool.
+    /// Host allocates a register of the specified bank and writes the
+    /// register address into H[target][0].
+    /// bank: 0=Hot, 1=Cold, 2=Param, 3=Shape
+    /// size: requested capacity
+    AllocRegister { target: Register, bank: u8, size: u16 },
+
+    /// Release a dynamically allocated register back to the pool.
+    FreeRegister { register: Register },
+
+    // =========================================================================
+    // Substrate Slice Addressing (1.3)
+    // =========================================================================
+    /// Read a specific slice of a field into target register.
+    /// field_id identifies the field type; slice_index identifies the region's slice.
+    FieldSliceRead { target: Register, field_id: u8, slice_index: u8 },
+    /// Write source register data to a specific field slice.
+    FieldSliceWrite { source: Register, field_id: u8, slice_index: u8 },
+
+    // =========================================================================
+    // Co-Activation Tracking (1.3)
+    // =========================================================================
+    /// Record co-activation between two neurons (registers).
+    /// The host accumulates co-activation counts for sleep-cycle Hebbian rewiring.
+    CoActivation { source_a: Register, source_b: Register },
+    /// Read co-activation matrix for a set of neurons.
+    /// Host writes accumulated co-activation counts into target register.
+    CoActivationRead { target: Register, source: Register },
+    /// Reset co-activation counters (called at start of sleep cycle).
+    CoActivationReset,
+
+    // =========================================================================
+    // Consolidation Lifecycle (1.3)
+    // =========================================================================
+    /// Promote entry temperature (e.g., Hot → Warm, Warm → Cool).
+    /// Used during SWR replay for proven patterns.
+    BankPromote { source: Register, bank_slot: u8 },
+    /// Demote entry temperature (e.g., Warm → Hot, Cool → Warm).
+    /// Used for patterns that failed consolidation validation.
+    BankDemote { source: Register, bank_slot: u8 },
+    /// Evict cold/low-scoring entries from a bank (sleep pruning).
+    /// count: max entries to evict.
+    BankEvict { bank_slot: u8, count: u8 },
+    /// Compact a bank (defragment after pruning).
+    BankCompact { bank_slot: u8 },
 }
 
 /// Describes how an instruction's 4 operand bytes are interpreted.
@@ -208,6 +346,26 @@ pub struct InstructionMeta {
     pub description: &'static str,
 }
 
+/// Trait for local bank access within the interpreter.
+///
+/// The v3 kernel provides an implementation backed by BankCluster.
+/// When present in ExecutionContext, bank extension ops execute locally
+/// instead of yielding DomainOps for simple operations.
+pub trait BankAccess: Send + Sync {
+    /// Query bank by similarity. Returns vec of (entry_id_as_i64, score_i32) pairs.
+    fn query(&self, bank_slot: u8, query: &[i32], top_k: usize) -> Option<Vec<(i64, i32)>>;
+    /// Load entry vector by ID (high/low i32 pair). Returns i32 vector.
+    fn load(&self, bank_slot: u8, entry_id_high: i32, entry_id_low: i32) -> Option<Vec<i32>>;
+    /// Get entry count for a bank.
+    fn count(&self, bank_slot: u8) -> Option<i32>;
+    /// Write a new entry. Returns (entry_id_high, entry_id_low).
+    fn write(&mut self, bank_slot: u8, vector: &[i32]) -> Option<(i32, i32)>;
+    /// Touch an entry (update access tick/count).
+    fn touch(&mut self, bank_slot: u8, entry_id_high: i32, entry_id_low: i32);
+    /// Delete an entry. Returns true if found.
+    fn delete(&mut self, bank_slot: u8, entry_id_high: i32, entry_id_low: i32) -> bool;
+}
+
 /// Execution context passed to extension `execute()` calls.
 ///
 /// Provides controlled, mutable access to the VM's register file,
@@ -237,6 +395,11 @@ pub struct ExecutionContext<'a> {
 
     // Pressure registers (for mastery learning)
     pub pressure_regs: &'a mut Vec<Option<Vec<i32>>>,
+
+    /// Optional local bank cache for inline bank execution.
+    /// When present, simple bank ops execute locally without yielding.
+    /// When absent, all bank ops yield DomainOps to the host.
+    pub bank_cache: Option<&'a mut (dyn BankAccess + 'static)>,
 }
 
 /// Loop state for LOOP/ENDLOOP tracking.
@@ -277,6 +440,19 @@ pub trait Extension: Send + Sync {
         operands: [u8; 4],
         ctx: &mut ExecutionContext,
     ) -> StepResult;
+
+    /// Custom assembly for extension-specific operand parsing.
+    /// Called by the assembler when parsing operands for this extension's instructions.
+    /// Returns assembled operand bytes or None to fall back to default parsing.
+    fn assemble_operands(&self, _mnemonic: &str, _tokens: &[&str]) -> Option<Result<[u8; 4], String>> {
+        None
+    }
+
+    /// Custom disassembly for extension-specific output formatting.
+    /// Returns a formatted string or None to fall back to default formatting.
+    fn disassemble(&self, _opcode: u16, _operands: [u8; 4]) -> Option<String> {
+        None
+    }
 }
 
 impl fmt::Debug for dyn Extension {

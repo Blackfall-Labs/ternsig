@@ -1,6 +1,6 @@
 [package]
 name = "ternsig"
-version = "1.0.0"
+version = "1.3.0"
 edition = "2021"
 description = "Signal foundation - Signal ISA, adaptive mastery learning, thermogram integration"
 license = "MIT OR Apache-2.0"
@@ -45,3 +45,7 @@ tempfile = "3.0"
 [[bin]]
 name = "ternsig-validate"
 path = "src/bin/ternsig-validate.rs"
+
+[[bin]]
+name = "ternsig-spec"
+path = "src/bin/ternsig-spec.rs"

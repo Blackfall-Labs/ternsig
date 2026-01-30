@@ -309,7 +309,7 @@ fn execute_ternary_add_bias(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepRes
 }
 
 fn execute_dequantize(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
-    let _dst = Register(ops[0]).index();
+    let dst = Register(ops[0]).index();
     let src = Register(ops[1]).index();
     let shift = ((ops[2] as u32) << 8) | (ops[3] as u32);
     let shift_amt = if shift > 0 { shift } else { 8 };
@@ -319,7 +319,10 @@ fn execute_dequantize(ops: [u8; 4], ctx: &mut ExecutionContext) -> StepResult {
         None => return StepResult::Error(format!("H{} not allocated", src)),
     };
 
-    *ctx.output_buffer = source.data.iter().map(|&v| v >> shift_amt).collect();
+    let data: Vec<i32> = source.data.iter().map(|&v| v >> shift_amt).collect();
+    let shape = source.shape.clone();
+
+    ctx.hot_regs[dst] = Some(HotBuffer { data, shape });
 
     StepResult::Continue
 }
