@@ -1,17 +1,21 @@
 //! Validation utilities for ternsig files
 //!
 //! Provides batch validation with detailed error reporting.
+//! Two levels of validation:
+//! - Assembly validation (always runs): syntax, structure, register parsing
+//! - Deep validation (with `--deep`): extensions, control flow, semantics, shapes
 //!
 //! # Example
 //!
 //! ```ignore
-//! use ternsig::validate::{validate_directory, ValidationResult};
+//! use ternsig::validate::{validate_file, validate_directory, ValidationResult};
 //!
 //! let results = validate_directory("path/to/ternsig/files")?;
 //! for result in &results {
 //!     match result {
-//!         ValidationResult::Ok { path, program } => {
-//!             println!("✓ {}: {} instructions", path.display(), program.instructions.len());
+//!         ValidationResult::Ok { path, program, diagnostics } => {
+//!             println!("✓ {}: {} instructions, {} diagnostics",
+//!                 path.display(), program.instructions.len(), diagnostics.len());
 //!         }
 //!         ValidationResult::Err { path, error } => {
 //!             eprintln!("✗ {}: {}", path.display(), error);
@@ -22,14 +26,18 @@
 
 use std::path::{Path, PathBuf};
 use crate::vm::{AssembledProgram, assemble, AssemblerError};
+use crate::vm::validator::{Diagnostic, ProgramValidator, ValidationConfig, DiagnosticLevel};
+use crate::vm::registry::ExtensionRegistry;
 
 /// Result of validating a single ternsig file
 #[derive(Debug)]
 pub enum ValidationResult {
-    /// File assembled successfully
+    /// File assembled successfully (and optionally deep-validated)
     Ok {
         path: PathBuf,
         program: AssembledProgram,
+        /// Diagnostics from ProgramValidator (empty if deep validation not run)
+        diagnostics: Vec<Diagnostic>,
     },
     /// File failed to assemble
     Err {
@@ -39,14 +47,17 @@ pub enum ValidationResult {
 }
 
 impl ValidationResult {
-    /// Returns true if validation succeeded
+    /// Returns true if validation succeeded (assembly passed, no error-level diagnostics)
     pub fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok { .. })
+        match self {
+            Self::Ok { diagnostics, .. } => !diagnostics.iter().any(|d| d.level == DiagnosticLevel::Error),
+            Self::Err { .. } => false,
+        }
     }
 
     /// Returns true if validation failed
     pub fn is_err(&self) -> bool {
-        matches!(self, Self::Err { .. })
+        !self.is_ok()
     }
 
     /// Get the path
@@ -54,6 +65,22 @@ impl ValidationResult {
         match self {
             Self::Ok { path, .. } => path,
             Self::Err { path, .. } => path,
+        }
+    }
+
+    /// Get diagnostics (empty for Err variant)
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        match self {
+            Self::Ok { diagnostics, .. } => diagnostics,
+            Self::Err { .. } => &[],
+        }
+    }
+
+    /// Check if deep validation produced errors
+    pub fn has_errors(&self) -> bool {
+        match self {
+            Self::Ok { diagnostics, .. } => diagnostics.iter().any(|d| d.level == DiagnosticLevel::Error),
+            Self::Err { .. } => true,
         }
     }
 }
@@ -103,8 +130,18 @@ impl From<std::io::Error> for ValidationError {
     }
 }
 
-/// Validate a single ternsig file
+/// Validate a single ternsig file (assembly only).
 pub fn validate_file<P: AsRef<Path>>(path: P) -> ValidationResult {
+    validate_file_with_config(path, None)
+}
+
+/// Validate a single ternsig file with optional deep validation.
+///
+/// When `config` is Some, runs ProgramValidator after assembly.
+pub fn validate_file_with_config<P: AsRef<Path>>(
+    path: P,
+    config: Option<&ValidationConfig>,
+) -> ValidationResult {
     let path = path.as_ref().to_path_buf();
 
     // Read file
@@ -120,7 +157,18 @@ pub fn validate_file<P: AsRef<Path>>(path: P) -> ValidationResult {
 
     // Assemble
     match assemble(&source) {
-        Ok(program) => ValidationResult::Ok { path, program },
+        Ok(program) => {
+            // Run deep validation if config provided
+            let diagnostics = if let Some(config) = config {
+                let registry = ExtensionRegistry::with_standard_extensions();
+                let validator = ProgramValidator::new(&registry);
+                validator.validate_assembled(&program, config)
+            } else {
+                Vec::new()
+            };
+
+            ValidationResult::Ok { path, program, diagnostics }
+        }
         Err(e) => {
             // Extract snippet around error line
             let snippet = source
@@ -140,10 +188,18 @@ pub fn validate_file<P: AsRef<Path>>(path: P) -> ValidationResult {
     }
 }
 
-/// Validate all .ternsig files in a directory (recursive)
+/// Validate all .ternsig files in a directory (recursive, assembly only).
 pub fn validate_directory<P: AsRef<Path>>(dir: P) -> std::io::Result<Vec<ValidationResult>> {
+    validate_directory_with_config(dir, None)
+}
+
+/// Validate all .ternsig files in a directory with optional deep validation.
+pub fn validate_directory_with_config<P: AsRef<Path>>(
+    dir: P,
+    config: Option<&ValidationConfig>,
+) -> std::io::Result<Vec<ValidationResult>> {
     let mut results = Vec::new();
-    validate_directory_recursive(dir.as_ref(), &mut results)?;
+    validate_directory_recursive(dir.as_ref(), config, &mut results)?;
 
     // Sort by path for consistent output
     results.sort_by(|a, b| a.path().cmp(b.path()));
@@ -151,7 +207,11 @@ pub fn validate_directory<P: AsRef<Path>>(dir: P) -> std::io::Result<Vec<Validat
     Ok(results)
 }
 
-fn validate_directory_recursive(dir: &Path, results: &mut Vec<ValidationResult>) -> std::io::Result<()> {
+fn validate_directory_recursive(
+    dir: &Path,
+    config: Option<&ValidationConfig>,
+    results: &mut Vec<ValidationResult>,
+) -> std::io::Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
@@ -161,9 +221,9 @@ fn validate_directory_recursive(dir: &Path, results: &mut Vec<ValidationResult>)
         let path = entry.path();
 
         if path.is_dir() {
-            validate_directory_recursive(&path, results)?;
+            validate_directory_recursive(&path, config, results)?;
         } else if path.extension().map_or(false, |e| e == "ternsig") {
-            results.push(validate_file(&path));
+            results.push(validate_file_with_config(&path, config));
         }
     }
 
@@ -177,6 +237,10 @@ pub struct ValidationSummary {
     pub passed: usize,
     pub failed: usize,
     pub errors: Vec<(PathBuf, ValidationError)>,
+    /// Deep validation diagnostics (errors/warnings/info counts)
+    pub diag_errors: usize,
+    pub diag_warnings: usize,
+    pub diag_info: usize,
 }
 
 impl ValidationSummary {
@@ -187,7 +251,21 @@ impl ValidationSummary {
 
         for result in results {
             match result {
-                ValidationResult::Ok { .. } => summary.passed += 1,
+                ValidationResult::Ok { diagnostics, .. } => {
+                    let has_errors = diagnostics.iter().any(|d| d.level == DiagnosticLevel::Error);
+                    if has_errors {
+                        summary.failed += 1;
+                    } else {
+                        summary.passed += 1;
+                    }
+                    for d in diagnostics {
+                        match d.level {
+                            DiagnosticLevel::Error => summary.diag_errors += 1,
+                            DiagnosticLevel::Warning => summary.diag_warnings += 1,
+                            DiagnosticLevel::Info => summary.diag_info += 1,
+                        }
+                    }
+                }
                 ValidationResult::Err { path, error } => {
                     summary.failed += 1;
                     summary.errors.push((path.clone(), ValidationError {
@@ -204,8 +282,8 @@ impl ValidationSummary {
 
     /// Print summary to stderr
     pub fn print_report(&self) {
-        if self.failed > 0 {
-            eprintln!("\n{} ERRORS:", self.failed);
+        if !self.errors.is_empty() {
+            eprintln!("\n{} ASSEMBLY ERRORS:", self.errors.len());
             for (path, error) in &self.errors {
                 eprintln!("\n  {}", path.display());
                 if let Some(line) = error.line {
@@ -224,6 +302,13 @@ impl ValidationSummary {
             "Validated {} files: {} passed, {} failed",
             self.total, self.passed, self.failed
         );
+
+        if self.diag_errors + self.diag_warnings + self.diag_info > 0 {
+            eprintln!(
+                "Diagnostics: {} errors, {} warnings, {} info",
+                self.diag_errors, self.diag_warnings, self.diag_info
+            );
+        }
     }
 }
 
@@ -271,5 +356,53 @@ mod tests {
             assert!(error.line.is_some());
             assert!(error.message.contains("Unknown") || error.message.contains("invalid"));
         }
+    }
+
+    #[test]
+    fn test_validate_with_deep_config() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, r#"
+.registers
+    H0: i32[1]
+
+.program
+    load_input H0
+    store_output H0
+    halt
+"#).unwrap();
+
+        let config = ValidationConfig::default();
+        let result = validate_file_with_config(file.path(), Some(&config));
+        assert!(result.is_ok());
+        // Should have diagnostics (no errors expected)
+        assert!(ProgramValidator::is_valid(result.diagnostics()));
+    }
+
+    #[test]
+    fn test_summary_with_diagnostics() {
+        use tempfile::NamedTempFile;
+        use std::io::Write;
+
+        let mut file = NamedTempFile::new().unwrap();
+        // Program without halt — triggers warning
+        write!(file, r#"
+.registers
+    H0: i32[1]
+
+.program
+    nop
+"#).unwrap();
+
+        let config = ValidationConfig::default();
+        let result = validate_file_with_config(file.path(), Some(&config));
+
+        let results = vec![result];
+        let summary = ValidationSummary::from_results(&results);
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.passed, 1); // warnings don't fail
+        assert!(summary.diag_warnings > 0); // "does not end with HALT"
     }
 }

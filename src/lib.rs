@@ -91,6 +91,7 @@ pub use loader::{
 // Validation utilities
 pub mod validate;
 pub use validate::{
-    validate_file, validate_directory,
+    validate_file, validate_file_with_config,
+    validate_directory, validate_directory_with_config,
     ValidationResult, ValidationError, ValidationSummary,
 };

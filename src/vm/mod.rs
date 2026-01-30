@@ -89,7 +89,7 @@ pub use crate::Signal;
 pub use extension::{Extension, ExecutionContext, InstructionMeta, OperandPattern, LoopState as ExtLoopState};
 pub use registry::ExtensionRegistry;
 pub use types::TypeId;
-pub use validator::{ProgramValidator, Diagnostic, DiagnosticLevel};
+pub use validator::{ProgramValidator, Diagnostic, DiagnosticLevel, ValidationConfig};
 
 /// Instruction size in bytes
 pub const INSTRUCTION_SIZE: usize = 8;
