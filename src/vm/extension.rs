@@ -375,6 +375,34 @@ pub enum DomainOp {
     /// DA > 140 reinforces, Cortisol > 60 weakens. Source register gates (>0 = fire).
     /// Result register receives count of affected entries.
     ThermoValenceCredit { source: Register, result: Register },
+
+    // =========================================================================
+    // Pool: Biological neuron pool substrate (0x000C)
+    // =========================================================================
+    /// Step pool dynamics. Host reads input currents from source register,
+    /// calls pool.tick(), writes spike count into source H[reg][0].
+    PoolTick { source: Register },
+    /// Persist pool state to .pool file.
+    PoolSave,
+    /// Restore pool state from .pool file.
+    PoolLoad,
+    /// Inject signal into pool neuron range. Host reads signal from source register.
+    /// range_start/range_end define the target neuron population.
+    PoolInject { source: Register, range_start: u16, range_end: u16 },
+    /// Read output spikes from pool neuron range into target register.
+    /// Host writes binary spike vector as i32 values into target.
+    PoolReadOutput { target: Register, range_start: u16, range_end: u16 },
+    /// Read pool statistics into target register.
+    /// H[target][0]=spike_count, [1]=synapse_count, [2]=tick_count.
+    PoolReadStats { target: Register },
+    /// Apply three-factor plasticity. Host reads DA/Cortisol/ACh from chemical
+    /// substrate, calls pool.apply_modulation(). Result receives (reinforced, weakened).
+    PoolModulate { result: Register },
+    /// Prune dead synapses (HOT + counter=0). Result receives pruned count.
+    PoolPruneDead { result: Register },
+    /// Create new synapses between co-active neurons (ACh-gated).
+    /// Result receives count of new synapses created.
+    PoolSynaptogenesis { result: Register },
 }
 
 /// Describes how an instruction's 4 operand bytes are interpreted.

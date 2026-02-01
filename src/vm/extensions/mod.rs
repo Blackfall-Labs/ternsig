@@ -19,6 +19,7 @@
 //! | 0x0009 | ipc           | 8           | Functional |
 //! | 0x000A | test          | 8           | Functional |
 //! | 0x000B | bank          | 12          | Functional |
+//! | 0x000C | pool          | 9           | Functional |
 //! | 0x00C0 | sampling      | 4           | Functional |
 
 pub mod activation;
@@ -29,6 +30,7 @@ pub mod learning;
 pub mod lifecycle;
 pub mod neuro;
 pub mod orchestration;
+pub mod pool;
 pub mod sampling;
 pub mod tensor;
 pub mod ternary;
@@ -42,6 +44,7 @@ pub use learning::LearningExtension;
 pub use lifecycle::LifecycleExtension;
 pub use neuro::NeuroExtension;
 pub use orchestration::OrchestrationExtension;
+pub use pool::PoolExtension;
 pub use sampling::SamplingExtension;
 pub use tensor::TensorExtension;
 pub use ternary::TernaryExtension;
@@ -65,6 +68,7 @@ pub fn resolve_ext_name(name: &str) -> Option<u16> {
         "ipc" => Some(0x0009),
         "test" => Some(0x000A),
         "bank" => Some(0x000B),
+        "pool" => Some(0x000C),
         "sampling" => Some(0x00C0),
         _ => None,
     }
@@ -109,6 +113,7 @@ pub fn standard_extensions() -> Vec<Box<dyn Extension>> {
         Box::new(IpcExtension::new()),
         Box::new(TestExtension::new()),
         Box::new(BankExtension::new()),
+        Box::new(PoolExtension::new()),
         Box::new(SamplingExtension::new()),
     ]
 }
@@ -132,7 +137,7 @@ mod tests {
     #[test]
     fn test_standard_extensions_count() {
         let exts = standard_extensions();
-        assert_eq!(exts.len(), 12);
+        assert_eq!(exts.len(), 13);
     }
 
     #[test]
@@ -173,6 +178,7 @@ mod tests {
         assert!(found.contains(&0x0009), "Missing ipc");
         assert!(found.contains(&0x000A), "Missing test");
         assert!(found.contains(&0x000B), "Missing bank");
+        assert!(found.contains(&0x000C), "Missing pool");
         assert!(found.contains(&0x00C0), "Missing sampling");
     }
 
