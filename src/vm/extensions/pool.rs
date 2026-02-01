@@ -73,6 +73,18 @@ impl PoolExtension {
                     operand_pattern: OperandPattern::Reg,
                     description: "Create new synapses (ACh-gated). Count in H[reg]. Yields PoolSynaptogenesis.",
                 },
+                InstructionMeta {
+                    opcode: 0x0009,
+                    mnemonic: "POOL_INJECT_DIRECT",
+                    operand_pattern: OperandPattern::Custom("[src:1][_:1][start_lo:1][end_lo:1]"),
+                    description: "Inject signal into pool neurons [start..end] (direct 0-255). Yields PoolInject.",
+                },
+                InstructionMeta {
+                    opcode: 0x000A,
+                    mnemonic: "POOL_READ_OUTPUT_DIRECT",
+                    operand_pattern: OperandPattern::Custom("[tgt:1][_:1][start_lo:1][end_lo:1]"),
+                    description: "Read output spikes from pool neurons [start..end] (direct 0-255). Yields PoolReadOutput.",
+                },
             ],
         }
     }
@@ -151,6 +163,22 @@ impl Extension for PoolExtension {
                 let reg = Register(operands[0]);
                 StepResult::Yield(DomainOp::PoolSynaptogenesis { result: reg })
             }
+            // POOL_INJECT_DIRECT: [src:1][_:1][start_lo:1][end_lo:1]
+            // Direct neuron indices 0-255 — for sub-256 neuron pools
+            0x0009 => {
+                let src = Register(operands[0]);
+                let range_start = operands[2] as u16;
+                let range_end = operands[3] as u16;
+                StepResult::Yield(DomainOp::PoolInject { source: src, range_start, range_end })
+            }
+            // POOL_READ_OUTPUT_DIRECT: [tgt:1][_:1][start_lo:1][end_lo:1]
+            // Direct neuron indices 0-255 — for sub-256 neuron pools
+            0x000A => {
+                let tgt = Register(operands[0]);
+                let range_start = operands[2] as u16;
+                let range_end = operands[3] as u16;
+                StepResult::Yield(DomainOp::PoolReadOutput { target: tgt, range_start, range_end })
+            }
             _ => StepResult::Error(format!("tvmr.pool: unknown opcode 0x{:04X}", opcode)),
         }
     }
@@ -219,7 +247,7 @@ mod tests {
         let ext = PoolExtension::new();
         assert_eq!(ext.ext_id(), 0x000C);
         assert_eq!(ext.name(), "tvmr.pool");
-        assert_eq!(ext.instructions().len(), 9);
+        assert_eq!(ext.instructions().len(), 11);
     }
 
     #[test]
@@ -356,7 +384,7 @@ mod tests {
             &mut current_error, &mut babble_scale, &mut babble_phase, &mut pressure_regs,
         );
 
-        for opcode in 0x0000..=0x0008u16 {
+        for opcode in 0x0000..=0x000Au16 {
             let result = ext.execute(opcode, [0x00, 0x00, 0x00, 0x00], &mut ctx);
             assert!(
                 matches!(result, StepResult::Yield(_)),
@@ -381,7 +409,7 @@ mod tests {
             &mut current_error, &mut babble_scale, &mut babble_phase, &mut pressure_regs,
         );
 
-        let result = ext.execute(0x0009, [0x00, 0x00, 0x00, 0x00], &mut ctx);
+        let result = ext.execute(0x000B, [0x00, 0x00, 0x00, 0x00], &mut ctx);
         assert!(matches!(result, StepResult::Error(_)));
     }
 }
