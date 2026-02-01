@@ -92,10 +92,13 @@ impl Interpreter {
             None => return StepResult::Error("Signal register not allocated".to_string()),
         };
 
-        let signals = match &mut self.cold_regs[weights_idx] {
-            Some(buf) => &mut buf.weights,
+        let buf = match &mut self.cold_regs[weights_idx] {
+            Some(buf) => buf,
             None => return StepResult::Error("Signal register not allocated".to_string()),
         };
+
+        let signals = &mut buf.weights;
+        let mut any_updated = false;
 
         for (i, p) in pressure.iter_mut().enumerate() {
             if i >= signals.len() { break; }
@@ -136,8 +139,13 @@ impl Interpreter {
 
                 // Only clear pressure for signals that were updated
                 *p = 0;
+                any_updated = true;
             }
             // Pressure below threshold is preserved for continued accumulation
+        }
+
+        if any_updated {
+            buf.dirty = true;
         }
 
         StepResult::Continue

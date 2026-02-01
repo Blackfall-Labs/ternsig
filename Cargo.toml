@@ -35,6 +35,9 @@ notify = "6.0"
 # Logging
 log = "0.4"
 
+# Random initialization (SNN substrate)
+rand = "0.8"
+
 [features]
 default = ["serde"]
 serde = []

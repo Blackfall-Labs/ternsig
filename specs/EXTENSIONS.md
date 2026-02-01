@@ -1,12 +1,12 @@
 # TVMR Standard Extensions
 
-10 extensions. 121 instructions total. Extension IDs 0x0001-0x000A. **All implemented.**
+11 extensions implemented. 133 instructions total. Extension IDs 0x0001-0x000A plus 0x00C0. **All implemented.**
 
 Extensions 0x000B-0x00FF reserved for future standards. 0x0100+ for user extensions.
 
 ---
 
-## 0x0001 — tensor (18 instructions)
+## 0x0001 — tensor (26 instructions)
 
 Matrix and tensor operations. General-purpose numeric computation.
 
@@ -30,6 +30,13 @@ Matrix and tensor operations. General-purpose numeric computation.
 | 000F | SQUEEZE         | RegReg          | Remove shape dimension | IMPL |
 | 0010 | UNSQUEEZE       | RegReg          | Add shape dimension | IMPL |
 | 0011 | TRANSPOSE       | RegReg          | Swap shape dimensions | IMPL |
+| 0012 | ATTN            | Custom          | Attention: softmax(q*k^T) * v | IMPL |
+| 0013 | ROPE_APPLY      | Custom          | Apply rotary positional embedding | IMPL |
+| 0014 | LAYERNORM       | Custom          | LayerNorm over last dimension | IMPL |
+| 0015 | RMSNORM         | Custom          | RMSNorm over last dimension | IMPL |
+| 0016 | KV_APPEND       | Custom          | Append KV slice into cache | IMPL |
+| 0017 | KV_READ         | Custom          | Read KV slice from cache | IMPL |
+| 0018 | KV_CLEAR        | Reg             | Clear KV cache | IMPL |
 
 ---
 
@@ -226,11 +233,24 @@ Testing and assertions. Development and CI.
 
 ---
 
+## 0x00C0 — sampling (4 instructions)
+
+Decoding and logits filtering for realtime token selection.
+
+| Op   | Mnemonic      | Pattern   | Description | Status |
+|------|---------------|-----------|-------------|--------|
+| 0000 | TEMPERATURE   | RegRegReg | Scale logits by temperature | IMPL |
+| 0001 | TOP_K         | RegRegReg | Keep top-k logits | IMPL |
+| 0002 | TOP_P         | RegRegReg | Nucleus filtering | IMPL |
+| 0003 | REP_PENALTY   | Custom   | Apply repetition penalty | IMPL |
+
+---
+
 ## Summary
 
 | ExtID  | Name          | Total | Status |
 |--------|---------------|-------|--------|
-| 0x0001 | tensor        | 18    | ALL IMPL |
+| 0x0001 | tensor        | 26    | ALL IMPL |
 | 0x0002 | ternary       | 14    | ALL IMPL |
 | 0x0003 | activation    | 5     | ALL IMPL |
 | 0x0004 | learning      | 20    | ALL IMPL |
@@ -240,6 +260,7 @@ Testing and assertions. Development and CI.
 | 0x0008 | lifecycle     | 8     | ALL IMPL |
 | 0x0009 | ipc           | 8     | ALL IMPL |
 | 0x000A | test          | 8     | ALL IMPL |
-| **Total** |            | **121** | **121/121** |
+| 0x00C0 | sampling      | 4     | ALL IMPL |
+| **Total** |            | **133** | **133/133** |
 
-**All 121 instructions implemented. 0 stubs remaining. 167 tests passing.**
+**All 133 instructions implemented. 0 stubs remaining. 167 tests passing.**

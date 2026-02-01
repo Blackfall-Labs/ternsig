@@ -143,6 +143,72 @@ impl NeuroExtension {
                     operand_pattern: OperandPattern::None,
                     description: "Reset all co-activation counters. Yields CoActivationReset.",
                 },
+                InstructionMeta {
+                    opcode: 0x0014,
+                    mnemonic: "SNN_SET_AXES",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Set SNN chemical axes from H[reg][0..3]. Yields SNNSetAxes.",
+                },
+                InstructionMeta {
+                    opcode: 0x0015,
+                    mnemonic: "SNN_STEP_AXES",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Step SNN axes toward target. Delta from H[reg][0]. Yields SNNStepAxes.",
+                },
+                InstructionMeta {
+                    opcode: 0x0016,
+                    mnemonic: "SNN_READ_ACTIVATION",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Read SNN mean activation into H[reg][0]. Yields SNNReadActivation.",
+                },
+                InstructionMeta {
+                    opcode: 0x0017,
+                    mnemonic: "SNN_READ_NEURON_COUNT",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Read SNN neuron count into H[reg][0]. Yields SNNReadNeuronCount.",
+                },
+                InstructionMeta {
+                    opcode: 0x0018,
+                    mnemonic: "SNN_READ_OUTPUTS",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Read all SNN neuron outputs into H[reg]. Yields SNNReadOutputs.",
+                },
+                InstructionMeta {
+                    opcode: 0x0019,
+                    mnemonic: "SNN_READ_TIMESTEP",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Read SNN timestep counter into H[reg][0]. Yields SNNReadTimestep.",
+                },
+                InstructionMeta {
+                    opcode: 0x001A,
+                    mnemonic: "SNN_GROW_NEURONS",
+                    operand_pattern: OperandPattern::RegReg,
+                    description: "Grow SNN by N neurons. Source=count, result=new total. Yields SNNGrowNeurons.",
+                },
+                InstructionMeta {
+                    opcode: 0x001B,
+                    mnemonic: "SNN_PRUNE_NEURONS",
+                    operand_pattern: OperandPattern::RegReg,
+                    description: "Prune SNN neurons at indices. Source=indices, result=new total. Yields SNNPruneNeurons.",
+                },
+                InstructionMeta {
+                    opcode: 0x001C,
+                    mnemonic: "SNN_READ_ACTIVITIES",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Read per-neuron spike counts into H[reg]. Yields SNNReadActivities.",
+                },
+                InstructionMeta {
+                    opcode: 0x001D,
+                    mnemonic: "THERMO_PRUNE_HOT",
+                    operand_pattern: OperandPattern::RegReg,
+                    description: "Prune weak HOT thermogram entries (immune response). Source gates, result gets count.",
+                },
+                InstructionMeta {
+                    opcode: 0x001E,
+                    mnemonic: "THERMO_VALENCE_CREDIT",
+                    operand_pattern: OperandPattern::RegReg,
+                    description: "Apply valence credit to HOT+WARM entries. Source gates, result gets affected count.",
+                },
             ],
         }
     }
@@ -281,6 +347,65 @@ impl Extension for NeuroExtension {
             0x0013 => {
                 StepResult::Yield(DomainOp::CoActivationReset)
             }
+            // SNN_SET_AXES: [reg:1][_:3]
+            0x0014 => {
+                let reg = Register(operands[0]);
+                StepResult::Yield(DomainOp::SNNSetAxes { source: reg })
+            }
+            // SNN_STEP_AXES: [reg:1][_:3]
+            0x0015 => {
+                let reg = Register(operands[0]);
+                StepResult::Yield(DomainOp::SNNStepAxes { source: reg })
+            }
+            // SNN_READ_ACTIVATION: [reg:1][_:3]
+            0x0016 => {
+                let reg = Register(operands[0]);
+                StepResult::Yield(DomainOp::SNNReadActivation { target: reg })
+            }
+            // SNN_READ_NEURON_COUNT: [reg:1][_:3]
+            0x0017 => {
+                let reg = Register(operands[0]);
+                StepResult::Yield(DomainOp::SNNReadNeuronCount { target: reg })
+            }
+            // SNN_READ_OUTPUTS: [reg:1][_:3]
+            0x0018 => {
+                let reg = Register(operands[0]);
+                StepResult::Yield(DomainOp::SNNReadOutputs { target: reg })
+            }
+            // SNN_READ_TIMESTEP: [reg:1][_:3]
+            0x0019 => {
+                let reg = Register(operands[0]);
+                StepResult::Yield(DomainOp::SNNReadTimestep { target: reg })
+            }
+            // SNN_GROW_NEURONS: [source:1][result:1][_:2]
+            0x001A => {
+                let source = Register(operands[0]);
+                let result = Register(operands[1]);
+                StepResult::Yield(DomainOp::SNNGrowNeurons { source, result })
+            }
+            // SNN_PRUNE_NEURONS: [source:1][result:1][_:2]
+            0x001B => {
+                let source = Register(operands[0]);
+                let result = Register(operands[1]);
+                StepResult::Yield(DomainOp::SNNPruneNeurons { source, result })
+            }
+            // SNN_READ_ACTIVITIES: [target:1][_:3]
+            0x001C => {
+                let reg = Register(operands[0]);
+                StepResult::Yield(DomainOp::SNNReadActivities { target: reg })
+            }
+            // THERMO_PRUNE_HOT: [source:1][result:1][_:2]
+            0x001D => {
+                let source = Register(operands[0]);
+                let result = Register(operands[1]);
+                StepResult::Yield(DomainOp::ThermoPruneHot { source, result })
+            }
+            // THERMO_VALENCE_CREDIT: [source:1][result:1][_:2]
+            0x001E => {
+                let source = Register(operands[0]);
+                let result = Register(operands[1]);
+                StepResult::Yield(DomainOp::ThermoValenceCredit { source, result })
+            }
             _ => StepResult::Error(format!("tvmr.neuro: unknown opcode 0x{:04X}", opcode)),
         }
     }
@@ -412,7 +537,7 @@ mod tests {
         let ext = NeuroExtension::new();
         assert_eq!(ext.ext_id(), 0x0005);
         assert_eq!(ext.name(), "tvmr.neuro");
-        assert_eq!(ext.instructions().len(), 20);
+        assert_eq!(ext.instructions().len(), 31);
     }
 
     #[test]
@@ -747,6 +872,8 @@ mod tests {
             0x0005, 0x0006, 0x0007, 0x0008,
             0x000B, 0x000C, 0x000D, 0x000E,
             0x000F, 0x0010, 0x0011, 0x0012, 0x0013,
+            0x0014, 0x0015, 0x0016, 0x0017, 0x0018, 0x0019,
+            0x001A, 0x001B, 0x001C, 0x001D, 0x001E,
         ];
         for &opcode in &yield_opcodes {
             let result = ext.execute(opcode, [0x00, 0x00, 0x00, 0x00], &mut ctx);

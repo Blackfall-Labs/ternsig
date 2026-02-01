@@ -88,6 +88,9 @@ pub use loader::{
     TernsigFormat, TernsigCard,
 };
 
+// Spiking Neural Network substrate (native program-instantiated)
+pub mod snn;
+
 // Validation utilities
 pub mod validate;
 pub use validate::{

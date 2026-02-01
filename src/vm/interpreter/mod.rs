@@ -171,6 +171,8 @@ pub struct ColdBuffer {
     pub frozen: bool,
     /// Per-signal temperature (None = all HOT)
     pub temperatures: Option<Vec<SignalTemperature>>,
+    /// Whether weights have been modified since last writeback.
+    pub dirty: bool,
     /// Per-signal usage counts for consolidation (None = not tracked)
     usage_counts: Option<Vec<u32>>,
     /// Last tick when usage was recorded (for decay)
@@ -186,6 +188,7 @@ impl ColdBuffer {
             thermogram_key: None,
             frozen: false,
             temperatures: None,
+            dirty: false,
             usage_counts: None,
             last_usage_tick: 0,
         }
@@ -198,6 +201,14 @@ impl ColdBuffer {
 
     pub fn is_frozen(&self) -> bool {
         self.frozen
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
     }
 
     pub fn weights(&self) -> &[Signal] {

@@ -293,14 +293,17 @@ impl Interpreter {
             .data
             .iter()
             .map(|&v| {
+                // Clamp to expected [0, 255] range before tanh calculation
+                let clamped = v.clamp(0, 255);
                 // Center around 0 for tanh calculation
-                let centered = v - 128;
+                let centered = clamped - 128;
                 // Apply soft saturation: tanh ≈ x / (1 + |x|/64)
-                let abs_val = centered.abs();
-                let denom = 64 + (abs_val >> 1);
-                let tanh_val = (centered * 64) / denom.max(1);
+                // Use i64 to prevent overflow with out-of-range inputs
+                let abs_val = centered.abs() as i64;
+                let denom = (64 + (abs_val >> 1)).max(1);
+                let tanh_val = ((centered as i64) * 64) / denom;
                 // Map back to [0, 255] centered at 128
-                (tanh_val + 128).clamp(0, 255)
+                (tanh_val as i32 + 128).clamp(0, 255)
             })
             .collect();
 

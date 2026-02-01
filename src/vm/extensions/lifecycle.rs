@@ -98,6 +98,50 @@ impl LifecycleExtension {
                     operand_pattern: OperandPattern::RegImm8,
                     description: "Store weights to persistent storage by key_id (from param register)",
                 },
+                // Async Brain — firmware → kernel state requests
+                InstructionMeta {
+                    opcode: 0x000D,
+                    mnemonic: "LEVEL_WRITE",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Set neuronal level (monotonic, forward only)",
+                },
+                InstructionMeta {
+                    opcode: 0x000E,
+                    mnemonic: "PHASE_WRITE",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Set boot phase (valid transitions only)",
+                },
+                InstructionMeta {
+                    opcode: 0x000F,
+                    mnemonic: "REST_WRITE",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Set rest mode (cortical gate, 0=wake, 1=rest)",
+                },
+                InstructionMeta {
+                    opcode: 0x0010,
+                    mnemonic: "CONSOLIDATION_REQ",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Request sleep consolidation (rest mode only)",
+                },
+                // Coherence — per-division coherence measurement (fog-of-war → stability → coherency)
+                InstructionMeta {
+                    opcode: 0x0011,
+                    mnemonic: "COHERENCE_SINGULAR_WRITE",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Write singular coherence for a division (H[src][0]=div, H[src][1]=value)",
+                },
+                InstructionMeta {
+                    opcode: 0x0012,
+                    mnemonic: "COHERENCE_MULTIMODAL_WRITE",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Write multi-modal coherence for a pair (H[src][0]=div_a, H[src][1]=div_b, H[src][2]=value)",
+                },
+                InstructionMeta {
+                    opcode: 0x0013,
+                    mnemonic: "COHERENCE_SINGULAR_READ",
+                    operand_pattern: OperandPattern::Reg,
+                    description: "Read all 7 singular coherence values into target register",
+                },
             ],
         }
     }
@@ -225,6 +269,55 @@ impl Extension for LifecycleExtension {
                 StepResult::Yield(DomainOp::StoreWeights { register, key_id })
             }
 
+            // LEVEL_WRITE [source:1][_:3]
+            // Host reads requested level from H[source][0]. Monotonic constraint.
+            0x000D => {
+                let source = Register(operands[0]);
+                StepResult::Yield(DomainOp::LevelWrite { source })
+            }
+
+            // PHASE_WRITE [source:1][_:3]
+            // Host reads requested phase from H[source][0]. Valid transition only.
+            0x000E => {
+                let source = Register(operands[0]);
+                StepResult::Yield(DomainOp::PhaseWrite { source })
+            }
+
+            // REST_WRITE [source:1][_:3]
+            // Host reads 0=wake, 1=rest from H[source][0]. Cortical gate.
+            0x000F => {
+                let source = Register(operands[0]);
+                StepResult::Yield(DomainOp::RestWrite { source })
+            }
+
+            // CONSOLIDATION_REQ [source:1][_:3]
+            // Host reads urgency from H[source][0]. Rest mode only.
+            0x0010 => {
+                let source = Register(operands[0]);
+                StepResult::Yield(DomainOp::ConsolidationRequest { source })
+            }
+
+            // COHERENCE_SINGULAR_WRITE [source:1][_:3]
+            // Host reads division from H[source][0], coherence value from H[source][1].
+            0x0011 => {
+                let source = Register(operands[0]);
+                StepResult::Yield(DomainOp::CoherenceSingularWrite { source })
+            }
+
+            // COHERENCE_MULTIMODAL_WRITE [source:1][_:3]
+            // Host reads div_a from H[source][0], div_b from H[source][1], value from H[source][2].
+            0x0012 => {
+                let source = Register(operands[0]);
+                StepResult::Yield(DomainOp::CoherenceMultimodalWrite { source })
+            }
+
+            // COHERENCE_SINGULAR_READ [target:1][_:3]
+            // Host writes 7 singular coherence values into H[target][0..6].
+            0x0013 => {
+                let target = Register(operands[0]);
+                StepResult::Yield(DomainOp::CoherenceSingularRead { target })
+            }
+
             _ => StepResult::Error(format!(
                 "tvmr.lifecycle: unknown opcode 0x{:04X}",
                 opcode
@@ -243,7 +336,7 @@ mod tests {
         let ext = LifecycleExtension::new();
         assert_eq!(ext.ext_id(), 0x0008);
         assert_eq!(ext.name(), "tvmr.lifecycle");
-        assert_eq!(ext.instructions().len(), 13);
+        assert_eq!(ext.instructions().len(), 20);
         assert_eq!(ext.instructions()[0].mnemonic, "PHASE_READ");
         assert_eq!(ext.instructions()[7].mnemonic, "HALT_REGION");
         assert_eq!(ext.instructions()[8].mnemonic, "TXN_BEGIN");
@@ -251,6 +344,10 @@ mod tests {
         assert_eq!(ext.instructions()[10].mnemonic, "TXN_ROLLBACK");
         assert_eq!(ext.instructions()[11].mnemonic, "LOAD_WEIGHTS");
         assert_eq!(ext.instructions()[12].mnemonic, "STORE_WEIGHTS");
+        assert_eq!(ext.instructions()[13].mnemonic, "LEVEL_WRITE");
+        assert_eq!(ext.instructions()[14].mnemonic, "PHASE_WRITE");
+        assert_eq!(ext.instructions()[15].mnemonic, "REST_WRITE");
+        assert_eq!(ext.instructions()[16].mnemonic, "CONSOLIDATION_REQ");
     }
 
     macro_rules! setup_ctx {
@@ -484,8 +581,8 @@ mod tests {
 
         let ext = LifecycleExtension::new();
 
-        // Verify all 13 opcodes yield (none return Continue)
-        for opcode in 0x0000..=0x000Cu16 {
+        // Verify all 20 opcodes yield (none return Continue)
+        for opcode in 0x0000..=0x0013u16 {
             let result = ext.execute(opcode, [0x00, 0x01, 0, 0], &mut ctx);
             match result {
                 StepResult::Yield(_) => {} // correct

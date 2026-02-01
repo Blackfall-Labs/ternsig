@@ -287,6 +287,22 @@ pub enum DomainOp {
     CoActivationReset,
 
     // =========================================================================
+    // Lifecycle: Firmware → Kernel state requests (Async Brain)
+    // =========================================================================
+    /// Set neuronal level. Monotonic constraint — can only progress forward.
+    /// Host reads requested level from source H[reg][0].
+    LevelWrite { source: Register },
+    /// Set boot phase. Valid transition constraint enforced by host.
+    /// Host reads requested phase from source H[reg][0].
+    PhaseWrite { source: Register },
+    /// Set rest mode. Cortical gate — requires cortex-level to enter rest.
+    /// Host reads 0=wake, 1=rest from source H[reg][0].
+    RestWrite { source: Register },
+    /// Request sleep consolidation (bank promote/demote/evict).
+    /// Only valid during rest mode. Host reads urgency from source H[reg][0].
+    ConsolidationRequest { source: Register },
+
+    // =========================================================================
     // Consolidation Lifecycle (1.3)
     // =========================================================================
     /// Promote entry temperature (e.g., Hot → Warm, Warm → Cool).
@@ -300,6 +316,65 @@ pub enum DomainOp {
     BankEvict { bank_slot: u8, count: u8 },
     /// Compact a bank (defragment after pruning).
     BankCompact { bank_slot: u8 },
+
+    // =========================================================================
+    // Coherence: Per-division coherence measurement (Async Brain)
+    // =========================================================================
+    /// Write singular coherence for a specific division.
+    /// Host reads division index from source H[reg][0], coherence value from H[reg][1].
+    CoherenceSingularWrite { source: Register },
+    /// Write multi-modal coherence for a division pair.
+    /// Host reads div_a from source H[reg][0], div_b from H[reg][1], value from H[reg][2].
+    CoherenceMultimodalWrite { source: Register },
+    /// Read singular coherence for all divisions into target register.
+    /// Host writes 7 values (one per division) into target H[reg][0..6].
+    CoherenceSingularRead { target: Register },
+
+    // =========================================================================
+    // Neuro: SNN substrate (0x0005)
+    // =========================================================================
+    /// Set SNN chemical axes target. Host reads 4 axis values from source
+    /// H[reg][0..3] = [excitability, inhibition, persistence, stress] as i8.
+    SNNSetAxes { source: Register },
+    /// Step SNN axes toward target at bounded rate. Host reads delta from
+    /// source H[reg][0] (max step per tick).
+    SNNStepAxes { source: Register },
+    /// Read SNN mean activation. Host writes signed i32 into target H[reg][0].
+    SNNReadActivation { target: Register },
+    /// Read SNN neuron count. Host writes count into target H[reg][0].
+    SNNReadNeuronCount { target: Register },
+    /// Read all SNN neuron output signals into target register.
+    /// Host writes neuron_count i32 values into target H[reg][0..n].
+    SNNReadOutputs { target: Register },
+    /// Read SNN timestep counter. Host writes into target H[reg][0].
+    SNNReadTimestep { target: Register },
+
+    // =========================================================================
+    // Neuro: SNN structural plasticity (evolution)
+    // =========================================================================
+    /// Grow SNN by N neurons. Host reads count from source H[reg][0].
+    /// Writes new total neuron count into result H[reg][0].
+    SNNGrowNeurons { source: Register, result: Register },
+    /// Prune SNN neurons at indices in source register.
+    /// Host reads N indices from source H[reg][0..N].
+    /// Writes new total neuron count into result H[reg][0].
+    SNNPruneNeurons { source: Register, result: Register },
+    /// Read per-neuron spike counts (activity) into target register.
+    /// Host writes neuron_count u32 values (as i32) into target H[reg][0..N].
+    SNNReadActivities { target: Register },
+
+    // =========================================================================
+    // Neuro: Thermogram immune response (0x0005)
+    // =========================================================================
+    /// Prune weak HOT thermogram entries. Systemic immune response.
+    /// Source register gates: prune only if value > 0.
+    /// Result register receives count of pruned entries.
+    ThermoPruneHot { source: Register, result: Register },
+
+    /// Apply valence credit to HOT+WARM thermogram entries.
+    /// DA > 140 reinforces, Cortisol > 60 weakens. Source register gates (>0 = fire).
+    /// Result register receives count of affected entries.
+    ThermoValenceCredit { source: Register, result: Register },
 }
 
 /// Describes how an instruction's 4 operand bytes are interpreted.
