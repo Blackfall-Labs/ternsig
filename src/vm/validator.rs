@@ -1287,6 +1287,7 @@ mod tests {
             labels: HashMap::new(),
             input_shape: vec![1],
             output_shape: vec![1],
+            projections: Vec::new(),
         };
 
         let diags = validator.validate_assembled(&program, &ValidationConfig::default());

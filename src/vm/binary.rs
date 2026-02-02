@@ -553,6 +553,7 @@ fn deserialize_tvmr(data: &[u8]) -> Result<AssembledProgram> {
         labels: HashMap::new(),
         input_shape: Vec::new(),
         output_shape: Vec::new(),
+        projections: Vec::new(),
     })
 }
 
@@ -635,6 +636,7 @@ fn deserialize_legacy(data: &[u8]) -> Result<AssembledProgram> {
         labels: HashMap::new(),
         input_shape: Vec::new(),
         output_shape: Vec::new(),
+        projections: Vec::new(),
     })
 }
 
@@ -919,6 +921,7 @@ mod tests {
             labels: HashMap::new(),
             input_shape: Vec::new(),
             output_shape: Vec::new(),
+            projections: Vec::new(),
         };
 
         let binary = serialize(&program).unwrap();

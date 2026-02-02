@@ -35,6 +35,29 @@ pub struct RequiredExtension {
     pub ext_id: u16,
 }
 
+/// Projection declaration (from .projection section).
+///
+/// Declares an outgoing spike projection from this program's domain
+/// to a target domain. Multiple `.projection` sections per program
+/// are supported for multiple outgoing bundles.
+#[derive(Debug, Clone)]
+pub struct ProjectionMeta {
+    /// Target domain name (e.g. "spatial", "auditory").
+    pub target: String,
+    /// Named bundle identifier (e.g. "dorsal_stream").
+    pub bundle: String,
+    /// Base synaptic weight (-128..127).
+    pub weight: i8,
+    /// Axonal delay in ticks (1-15).
+    pub delay: u8,
+    /// Fraction of source neurons that project (0.0-1.0).
+    pub density: f32,
+    /// Spatial mapping strategy.
+    pub mapping: String,
+    /// Optional neuromodulator name (e.g. "dopamine", "acetylcholine").
+    pub modulator: Option<String>,
+}
+
 /// Assembled Ternsig program
 #[derive(Debug, Clone)]
 pub struct AssembledProgram {
@@ -56,6 +79,8 @@ pub struct AssembledProgram {
     pub input_shape: Vec<usize>,
     /// Output shape (inferred from store_output)
     pub output_shape: Vec<usize>,
+    /// Projection declarations (from .projection sections)
+    pub projections: Vec<ProjectionMeta>,
 }
 
 impl AssembledProgram {
@@ -134,6 +159,10 @@ pub struct Assembler {
     meta_input_dim: Option<usize>,
     /// Meta: declared output dimension (for validation)
     meta_output_dim: Option<usize>,
+    /// Accumulated projection declarations
+    projections: Vec<ProjectionMeta>,
+    /// Current projection being built (Some while inside a .projection section)
+    current_projection: Option<ProjectionMeta>,
 }
 
 impl Assembler {
@@ -150,6 +179,8 @@ impl Assembler {
             meta_domain: None,
             meta_input_dim: None,
             meta_output_dim: None,
+            projections: Vec::new(),
+            current_projection: None,
         }
     }
 
@@ -165,11 +196,14 @@ impl Assembler {
         self.meta_domain = None;
         self.meta_input_dim = None;
         self.meta_output_dim = None;
+        self.projections.clear();
+        self.current_projection = None;
 
         let mut in_meta = false;
         let mut in_requires = false;
         let mut in_registers = false;
         let mut in_program = false;
+        let mut in_projection = false;
         let mut in_skipped_section = false; // .aliases, .config - content ignored
 
         for (idx, line) in source.lines().enumerate() {
@@ -194,12 +228,18 @@ impl Assembler {
 
             // Section directives
             if line.starts_with('.') {
+                // Finalize any in-progress projection before switching sections
+                if in_projection {
+                    self.finalize_projection()?;
+                }
+
                 match line.to_lowercase().as_str() {
                     ".meta" => {
                         in_meta = true;
                         in_requires = false;
                         in_registers = false;
                         in_program = false;
+                        in_projection = false;
                         in_skipped_section = false;
                         continue;
                     }
@@ -208,6 +248,7 @@ impl Assembler {
                         in_requires = true;
                         in_registers = false;
                         in_program = false;
+                        in_projection = false;
                         in_skipped_section = false;
                         continue;
                     }
@@ -216,6 +257,7 @@ impl Assembler {
                         in_requires = false;
                         in_registers = true;
                         in_program = false;
+                        in_projection = false;
                         in_skipped_section = false;
                         continue;
                     }
@@ -224,27 +266,44 @@ impl Assembler {
                         in_requires = false;
                         in_registers = false;
                         in_program = true;
+                        in_projection = false;
                         in_skipped_section = false;
                         continue;
                     }
-                    ".aliases" => {
-                        // Aliases section - register aliases like "H_HIDDEN H1"
-                        // We skip this section as aliases are syntactic sugar
-                        // that the source files can resolve without us tracking them
+                    ".projection" => {
                         in_meta = false;
                         in_requires = false;
                         in_registers = false;
                         in_program = false;
+                        in_projection = true;
+                        in_skipped_section = false;
+                        // Start a new projection with defaults
+                        self.current_projection = Some(ProjectionMeta {
+                            target: String::new(),
+                            bundle: String::new(),
+                            weight: 50,
+                            delay: 1,
+                            density: 0.3,
+                            mapping: "topographic".to_string(),
+                            modulator: None,
+                        });
+                        continue;
+                    }
+                    ".aliases" => {
+                        in_meta = false;
+                        in_requires = false;
+                        in_registers = false;
+                        in_program = false;
+                        in_projection = false;
                         in_skipped_section = true;
                         continue;
                     }
                     ".config" => {
-                        // Config section - additional configuration
-                        // Skip for forward compatibility
                         in_meta = false;
                         in_requires = false;
                         in_registers = false;
                         in_program = false;
+                        in_projection = false;
                         in_skipped_section = true;
                         continue;
                     }
@@ -264,6 +323,8 @@ impl Assembler {
                 self.parse_requires(line)?;
             } else if in_registers {
                 self.parse_register(line)?;
+            } else if in_projection {
+                self.parse_projection_field(line)?;
             } else if in_program {
                 // Handle include directive - skip as we use embedded firmware
                 if line.starts_with("include") {
@@ -273,6 +334,11 @@ impl Assembler {
             } else {
                 return Err(self.error("Code outside of section".to_string()));
             }
+        }
+
+        // Finalize any trailing projection section
+        if in_projection {
+            self.finalize_projection()?;
         }
 
         // Resolve labels
@@ -312,6 +378,7 @@ impl Assembler {
             labels: self.labels.clone(),
             input_shape,
             output_shape,
+            projections: self.projections.clone(),
         })
     }
 
@@ -364,6 +431,79 @@ impl Assembler {
             }
         }
 
+        Ok(())
+    }
+
+    /// Parse a key-value field inside a .projection section.
+    ///
+    /// Format: `key  value` or `key  "string value"`
+    fn parse_projection_field(&mut self, line: &str) -> Result<(), AssemblerError> {
+        let parts: Vec<&str> = line.splitn(2, char::is_whitespace).collect();
+        if parts.is_empty() {
+            return Ok(());
+        }
+
+        let key = parts[0].trim().to_lowercase();
+        let value = parts.get(1).map(|s| s.trim()).unwrap_or("");
+        let line_number = self.line_number;
+
+        let proj = match self.current_projection.as_mut() {
+            Some(p) => p,
+            None => return Err(AssemblerError {
+                line: line_number,
+                message: ".projection field outside projection section".to_string(),
+            }),
+        };
+
+        match key.as_str() {
+            "target" => proj.target = value.trim_matches('"').to_string(),
+            "bundle" => proj.bundle = value.trim_matches('"').to_string(),
+            "weight" => {
+                proj.weight = value.parse::<i8>().map_err(|_| AssemblerError {
+                    line: line_number,
+                    message: format!("Invalid projection weight: {}", value),
+                })?;
+            }
+            "delay" => {
+                proj.delay = value.parse::<u8>().map_err(|_| AssemblerError {
+                    line: line_number,
+                    message: format!("Invalid projection delay: {}", value),
+                })?;
+            }
+            "density" => {
+                proj.density = value.parse::<f32>().map_err(|_| AssemblerError {
+                    line: line_number,
+                    message: format!("Invalid projection density: {}", value),
+                })?;
+            }
+            "mapping" => proj.mapping = value.trim_matches('"').to_lowercase(),
+            "modulator" => {
+                let mod_name = value.trim_matches('"').to_lowercase();
+                if mod_name == "none" || mod_name.is_empty() {
+                    proj.modulator = None;
+                } else {
+                    proj.modulator = Some(mod_name);
+                }
+            }
+            _ => {
+                log::debug!("Ignoring unknown .projection key: {}", key);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Finalize and store the current in-progress projection.
+    fn finalize_projection(&mut self) -> Result<(), AssemblerError> {
+        if let Some(proj) = self.current_projection.take() {
+            if proj.target.is_empty() {
+                return Err(self.error(".projection section missing 'target' field".to_string()));
+            }
+            if proj.bundle.is_empty() {
+                return Err(self.error(".projection section missing 'bundle' field".to_string()));
+            }
+            self.projections.push(proj);
+        }
         Ok(())
     }
 
@@ -1215,5 +1355,90 @@ mod tests {
         assert_eq!(program.required_extensions.len(), 6);
         assert_eq!(program.required_extensions[0].ext_id, 0x0001);
         assert_eq!(program.required_extensions[5].ext_id, 0x0006);
+    }
+
+    #[test]
+    fn test_projection_section() {
+        let source = r#"
+.meta
+    name "visual_encoder"
+    domain "visual"
+
+.projection
+    target      "spatial"
+    bundle      "dorsal_stream"
+    weight      60
+    delay       2
+    density     0.3
+    mapping     topographic
+    modulator   dopamine
+
+.projection
+    target      "auditory"
+    bundle      "ventral_stream"
+    weight      50
+    delay       3
+    density     0.25
+    mapping     convergent
+    modulator   dopamine
+
+.registers
+    H0: i32[4]
+
+.program
+    halt
+"#;
+
+        let program = assemble(source).expect("Assembly failed");
+        assert_eq!(program.projections.len(), 2);
+
+        let p0 = &program.projections[0];
+        assert_eq!(p0.target, "spatial");
+        assert_eq!(p0.bundle, "dorsal_stream");
+        assert_eq!(p0.weight, 60);
+        assert_eq!(p0.delay, 2);
+        assert!((p0.density - 0.3).abs() < 0.01);
+        assert_eq!(p0.mapping, "topographic");
+        assert_eq!(p0.modulator, Some("dopamine".to_string()));
+
+        let p1 = &program.projections[1];
+        assert_eq!(p1.target, "auditory");
+        assert_eq!(p1.bundle, "ventral_stream");
+        assert_eq!(p1.weight, 50);
+        assert_eq!(p1.delay, 3);
+        assert_eq!(p1.mapping, "convergent");
+    }
+
+    #[test]
+    fn test_projection_missing_target_errors() {
+        let source = r#"
+.projection
+    bundle  "test"
+
+.program
+    halt
+"#;
+        let result = assemble(source);
+        assert!(result.is_err(), "should error on missing target");
+    }
+
+    #[test]
+    fn test_projection_inhibitory_weight() {
+        let source = r#"
+.projection
+    target      "thalamus"
+    bundle      "pallido_thalamic"
+    weight      -50
+    delay       1
+    density     0.3
+    mapping     convergent
+    modulator   dopamine
+
+.program
+    halt
+"#;
+        let program = assemble(source).expect("Assembly failed");
+        assert_eq!(program.projections.len(), 1);
+        assert_eq!(program.projections[0].weight, -50);
     }
 }

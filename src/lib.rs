@@ -50,7 +50,7 @@ pub use vm::{
     Interpreter, Instruction, Action,
     Register, HotBuffer, ColdBuffer, Dtype, Modifier,
     // Assembly
-    assemble, AssembledProgram, AssemblerError,
+    assemble, AssembledProgram, AssemblerError, ProjectionMeta,
     // Binary format
     serialize, deserialize, load_from_file, save_to_file,
     // Hot reload
