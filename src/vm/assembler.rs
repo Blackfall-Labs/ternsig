@@ -81,6 +81,8 @@ pub struct AssembledProgram {
     pub output_shape: Vec<usize>,
     /// Projection declarations (from .projection sections)
     pub projections: Vec<ProjectionMeta>,
+    /// Skull-space origin (from .meta skull_x/skull_y/skull_z)
+    pub skull_origin: Option<(u16, u16, u16)>,
 }
 
 impl AssembledProgram {
@@ -163,6 +165,10 @@ pub struct Assembler {
     projections: Vec<ProjectionMeta>,
     /// Current projection being built (Some while inside a .projection section)
     current_projection: Option<ProjectionMeta>,
+    /// Meta: skull placement coordinates (x, y, z)
+    meta_skull_x: Option<u16>,
+    meta_skull_y: Option<u16>,
+    meta_skull_z: Option<u16>,
 }
 
 impl Assembler {
@@ -181,6 +187,9 @@ impl Assembler {
             meta_output_dim: None,
             projections: Vec::new(),
             current_projection: None,
+            meta_skull_x: None,
+            meta_skull_y: None,
+            meta_skull_z: None,
         }
     }
 
@@ -198,6 +207,9 @@ impl Assembler {
         self.meta_output_dim = None;
         self.projections.clear();
         self.current_projection = None;
+        self.meta_skull_x = None;
+        self.meta_skull_y = None;
+        self.meta_skull_z = None;
 
         let mut in_meta = false;
         let mut in_requires = false;
@@ -368,6 +380,15 @@ impl Assembler {
             }
         }
 
+        // Validate skull coordinates: all three or none
+        let skull_origin = match (self.meta_skull_x, self.meta_skull_y, self.meta_skull_z) {
+            (Some(x), Some(y), Some(z)) => Some((x, y, z)),
+            (None, None, None) => None,
+            _ => return Err(self.error(
+                "Partial skull placement: skull_x, skull_y, skull_z must all be present or all absent".to_string()
+            )),
+        };
+
         Ok(AssembledProgram {
             name: self.meta_name.clone().unwrap_or_default(),
             version: self.meta_version,
@@ -379,6 +400,7 @@ impl Assembler {
             input_shape,
             output_shape,
             projections: self.projections.clone(),
+            skull_origin,
         })
     }
 
@@ -424,6 +446,21 @@ impl Assembler {
             "domain" => {
                 let domain = value.trim_matches('"').to_string();
                 self.meta_domain = Some(domain);
+            }
+            "skull_x" => {
+                let v = value.parse::<u16>()
+                    .map_err(|_| self.error(format!("Invalid skull_x: {}", value)))?;
+                self.meta_skull_x = Some(v);
+            }
+            "skull_y" => {
+                let v = value.parse::<u16>()
+                    .map_err(|_| self.error(format!("Invalid skull_y: {}", value)))?;
+                self.meta_skull_y = Some(v);
+            }
+            "skull_z" => {
+                let v = value.parse::<u16>()
+                    .map_err(|_| self.error(format!("Invalid skull_z: {}", value)))?;
+                self.meta_skull_z = Some(v);
             }
             _ => {
                 // Unknown meta key - just ignore for forward compatibility
@@ -1440,5 +1477,51 @@ mod tests {
         let program = assemble(source).expect("Assembly failed");
         assert_eq!(program.projections.len(), 1);
         assert_eq!(program.projections[0].weight, -50);
+    }
+
+    #[test]
+    fn test_meta_skull_position_parsed() {
+        let source = r#"
+.meta
+    name        "test_placement"
+    domain      "spatial"
+    skull_x     36
+    skull_y     44
+    skull_z     28
+
+.program
+    halt
+"#;
+        let program = assemble(source).expect("Assembly failed");
+        assert_eq!(program.skull_origin, Some((36, 44, 28)));
+    }
+
+    #[test]
+    fn test_meta_skull_position_absent_is_none() {
+        let source = r#"
+.meta
+    name        "no_placement"
+    domain      "auditory"
+
+.program
+    halt
+"#;
+        let program = assemble(source).expect("Assembly failed");
+        assert_eq!(program.skull_origin, None);
+    }
+
+    #[test]
+    fn test_meta_skull_partial_errors() {
+        let source = r#"
+.meta
+    name        "partial"
+    skull_x     10
+    skull_y     20
+
+.program
+    halt
+"#;
+        let result = assemble(source);
+        assert!(result.is_err(), "Partial skull placement should error");
     }
 }

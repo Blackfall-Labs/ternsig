@@ -554,6 +554,7 @@ fn deserialize_tvmr(data: &[u8]) -> Result<AssembledProgram> {
         input_shape: Vec::new(),
         output_shape: Vec::new(),
         projections: Vec::new(),
+        skull_origin: None,
     })
 }
 
@@ -637,6 +638,7 @@ fn deserialize_legacy(data: &[u8]) -> Result<AssembledProgram> {
         input_shape: Vec::new(),
         output_shape: Vec::new(),
         projections: Vec::new(),
+        skull_origin: None,
     })
 }
 
@@ -922,6 +924,7 @@ mod tests {
             input_shape: Vec::new(),
             output_shape: Vec::new(),
             projections: Vec::new(),
+            skull_origin: None,
         };
 
         let binary = serialize(&program).unwrap();

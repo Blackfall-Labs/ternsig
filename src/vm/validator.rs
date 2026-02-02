@@ -1288,6 +1288,7 @@ mod tests {
             input_shape: vec![1],
             output_shape: vec![1],
             projections: Vec::new(),
+            skull_origin: None,
         };
 
         let diags = validator.validate_assembled(&program, &ValidationConfig::default());
