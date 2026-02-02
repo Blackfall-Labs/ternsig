@@ -726,6 +726,18 @@ impl Interpreter {
             Action::CMP_GT => self.execute_cmp_gt(instr),
             Action::MAX_REDUCE => self.execute_max_reduce(instr),
             Action::CLAMP => self.execute_clamp(instr),
+            Action::SET_CONST => {
+                let dst_idx = instr.target().index();
+                let value = instr.imm16_cd() as i32;
+                while self.hot_regs.len() <= dst_idx {
+                    self.hot_regs.push(None);
+                }
+                self.hot_regs[dst_idx] = Some(HotBuffer {
+                    data: vec![value],
+                    shape: vec![1],
+                });
+                StepResult::Continue
+            }
 
             // Ternary ops (ops_ternary.rs)
             Action::DEQUANTIZE => self.execute_dequantize(instr),
@@ -755,6 +767,28 @@ impl Interpreter {
             Action::BREAK => self.execute_break(),
             Action::JUMP => {
                 self.pc = instr.count() as usize;
+                StepResult::Continue
+            }
+            Action::IF_ZERO => {
+                let reg = instr.reg_a();
+                let is_zero = self.hot_regs.get(reg.0 as usize)
+                    .and_then(|r| r.as_ref())
+                    .map(|buf| buf.data.iter().all(|&v| v == 0))
+                    .unwrap_or(true); // empty/missing register treated as zero
+                if is_zero {
+                    self.pc = instr.count() as usize;
+                }
+                StepResult::Continue
+            }
+            Action::IF_NONZERO => {
+                let reg = instr.reg_a();
+                let is_nonzero = self.hot_regs.get(reg.0 as usize)
+                    .and_then(|r| r.as_ref())
+                    .map(|buf| buf.data.iter().any(|&v| v != 0))
+                    .unwrap_or(false); // empty/missing register treated as zero
+                if is_nonzero {
+                    self.pc = instr.count() as usize;
+                }
                 StepResult::Continue
             }
             Action::CALL => {

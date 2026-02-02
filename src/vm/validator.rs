@@ -903,6 +903,7 @@ fn core_isa_pattern(opcode: u16) -> OperandPattern {
         Action::SOFTMAX => OperandPattern::RegReg,
         Action::SCALE | Action::SHIFT | Action::CLAMP => OperandPattern::RegRegReg,
         Action::MAX_REDUCE => OperandPattern::RegReg,
+        Action::SET_CONST => OperandPattern::RegImm16,
 
         // Ternary ops
         Action::TERNARY_MATMUL | Action::TERNARY_BATCH_MATMUL => OperandPattern::RegRegReg,

@@ -130,6 +130,8 @@ impl Action {
     pub const CMP_GT: Self = Self(0x300F);
     /// Max reduce: target[0] = max(source)
     pub const MAX_REDUCE: Self = Self(0x3010);
+    /// Set constant: target = [value] (scalar i32 from imm16)
+    pub const SET_CONST: Self = Self(0x3011);
 
     // =========================================================================
     // Ternary Operations (0x40xx) - Integer-only, CPU-only
@@ -423,6 +425,7 @@ impl Action {
             0x300E => "SUB",
             0x300F => "CMP_GT",
             0x3010 => "MAX_REDUCE",
+            0x3011 => "SET_CONST",
 
             // Ternary
             0x4000 => "TERNARY_MATMUL",

@@ -151,6 +151,10 @@ pub struct Assembler {
     unresolved_labels: Vec<(usize, String)>,
     /// Required extensions (from .requires section)
     required_extensions: Vec<RequiredExtension>,
+    /// User-provided extension metadata for assembly-time mnemonic resolution.
+    /// Allows user-defined extensions (0x0100+) to resolve at assembly time
+    /// without being compiled into the standard extension set.
+    extra_extension_meta: Vec<ExtraExtMeta>,
     /// Meta: program name
     meta_name: Option<String>,
     /// Meta: program version
@@ -171,6 +175,13 @@ pub struct Assembler {
     meta_skull_z: Option<u16>,
 }
 
+/// Extension metadata provided externally for assembly-time resolution.
+pub struct ExtraExtMeta {
+    pub ext_id: u16,
+    pub name: String,
+    pub instructions: Vec<super::extension::InstructionMeta>,
+}
+
 impl Assembler {
     pub fn new() -> Self {
         Self {
@@ -180,6 +191,7 @@ impl Assembler {
             labels: HashMap::new(),
             unresolved_labels: Vec::new(),
             required_extensions: Vec::new(),
+            extra_extension_meta: Vec::new(),
             meta_name: None,
             meta_version: 1,
             meta_domain: None,
@@ -191,6 +203,19 @@ impl Assembler {
             meta_skull_y: None,
             meta_skull_z: None,
         }
+    }
+
+    /// Register external extension metadata for assembly-time resolution.
+    ///
+    /// User-defined extensions (ext_id >= 0x0100) aren't compiled into
+    /// the standard extension set. This method lets the assembler resolve
+    /// their mnemonics at assembly time.
+    pub fn register_extension_meta(&mut self, ext_id: u16, name: &str, instructions: &[super::extension::InstructionMeta]) {
+        self.extra_extension_meta.push(ExtraExtMeta {
+            ext_id,
+            name: name.to_string(),
+            instructions: instructions.to_vec(),
+        });
     }
 
     /// Assemble source code into a program
@@ -825,6 +850,17 @@ impl Assembler {
                     [target.0, source.0, 0, 0],
                 ))
             }
+            "set" => {
+                // set target, value  — load scalar constant into register
+                let target = self.parse_register_operand(ops.get(0))?;
+                let value = self.parse_immediate(ops.get(1))? as u16;
+                let hi = (value >> 8) as u8;
+                let lo = (value & 0xFF) as u8;
+                Ok(Instruction::core(
+                    Action::SET_CONST.0,
+                    [target.0, 0, hi, lo],
+                ))
+            }
             "clamp" => {
                 // clamp target, source, min, max
                 let target = self.parse_register_operand(ops.get(0))?;
@@ -986,6 +1022,41 @@ impl Assembler {
             }
 
             // Control flow
+            "jump" => {
+                let label = ops.get(0)
+                    .ok_or_else(|| self.error("jump requires a label".into()))?
+                    .trim();
+                let idx = self.instructions.len();
+                self.unresolved_labels.push((idx, label.to_string()));
+                Ok(Instruction::core(
+                    Action::JUMP.0,
+                    [0, 0, 0, 0], // operands[2:3] patched by resolve_labels
+                ))
+            }
+            "if_zero" => {
+                let reg = self.parse_register_operand(ops.get(0))?;
+                let label = ops.get(1)
+                    .ok_or_else(|| self.error("if_zero requires reg, label".into()))?
+                    .trim();
+                let idx = self.instructions.len();
+                self.unresolved_labels.push((idx, label.to_string()));
+                Ok(Instruction::core(
+                    Action::IF_ZERO.0,
+                    [reg.0, 0, 0, 0], // operands[2:3] patched by resolve_labels
+                ))
+            }
+            "if_nonzero" => {
+                let reg = self.parse_register_operand(ops.get(0))?;
+                let label = ops.get(1)
+                    .ok_or_else(|| self.error("if_nonzero requires reg, label".into()))?
+                    .trim();
+                let idx = self.instructions.len();
+                self.unresolved_labels.push((idx, label.to_string()));
+                Ok(Instruction::core(
+                    Action::IF_NONZERO.0,
+                    [reg.0, 0, 0, 0], // operands[2:3] patched by resolve_labels
+                ))
+            }
             "loop" => {
                 let count = self.parse_immediate(ops.get(0))? as u16;
                 Ok(Instruction::loop_n(count))
@@ -1013,28 +1084,116 @@ impl Assembler {
         mnemonic: &str,
         ops: &[&str],
     ) -> Result<Instruction, AssemblerError> {
-        let (ext_id, opcode) = super::extensions::resolve_qualified_mnemonic(ext_name, mnemonic)
-            .ok_or_else(|| {
-                self.error(format!(
-                    "Unknown extension mnemonic: {}.{}",
-                    ext_name, mnemonic
-                ))
-            })?;
-
-        // Try extension-specific operand assembly first
         let upper_mnemonic = mnemonic.to_uppercase();
-        let exts = super::extensions::standard_extensions();
-        for ext in &exts {
-            if ext.ext_id() == ext_id {
-                if let Some(result) = ext.assemble_operands(&upper_mnemonic, ops) {
-                    let operands = result.map_err(|e| self.error(e))?;
-                    return Ok(Instruction::ext(ext_id, opcode, operands));
+
+        // --- Try standard extensions first ---
+        if let Some((ext_id, opcode)) = super::extensions::resolve_qualified_mnemonic(ext_name, mnemonic) {
+            // Standard extension resolved. Try extension-specific operand assembly.
+            let exts = super::extensions::standard_extensions();
+            for ext in &exts {
+                if ext.ext_id() == ext_id {
+                    if let Some(result) = ext.assemble_operands(&upper_mnemonic, ops) {
+                        let operands = result.map_err(|e| self.error(e))?;
+                        return Ok(Instruction::ext(ext_id, opcode, operands));
+                    }
+                    break;
                 }
-                break;
             }
+
+            let operands = self.parse_generic_ext_operands(ops);
+            return Ok(Instruction::ext(ext_id, opcode, operands));
         }
 
-        // Fall back to generic operand parsing
+        // --- Try user-provided extension metadata ---
+        // Check if this ext_name was declared in .requires or registered via register_extension_meta
+        let ext_id = self.required_extensions.iter()
+            .find(|req| req.name == ext_name)
+            .map(|req| req.ext_id);
+
+        if let Some(ext_id) = ext_id {
+            // Declared extension — look up mnemonic in extra_extension_meta
+            for extra in &self.extra_extension_meta {
+                if extra.ext_id == ext_id {
+                    for meta in &extra.instructions {
+                        if meta.mnemonic == upper_mnemonic {
+                            // Try extension-specific operand assembly from metadata
+                            let operands = self.parse_ext_operands_from_pattern(&meta.operand_pattern, ops)?;
+                            return Ok(Instruction::ext(ext_id, meta.opcode, operands));
+                        }
+                    }
+                    // Extension found but mnemonic not recognized
+                    return Err(self.error(format!(
+                        "Unknown mnemonic '{}' in extension '{}' (0x{:04X})",
+                        mnemonic, ext_name, ext_id
+                    )));
+                }
+            }
+
+            // Extension declared in .requires but no metadata registered.
+            // Fall back to generic: opcode=0, generic operands.
+            // Runtime will error if the opcode is wrong.
+            let operands = self.parse_generic_ext_operands(ops);
+            return Ok(Instruction::ext(ext_id, 0, operands));
+        }
+
+        Err(self.error(format!(
+            "Unknown extension mnemonic: {}.{}",
+            ext_name, mnemonic
+        )))
+    }
+
+    /// Parse operands based on an OperandPattern from extension metadata.
+    fn parse_ext_operands_from_pattern(
+        &self,
+        pattern: &super::extension::OperandPattern,
+        ops: &[&str],
+    ) -> Result<[u8; 4], AssemblerError> {
+        use super::extension::OperandPattern;
+        match pattern {
+            OperandPattern::None => Ok([0u8; 4]),
+            OperandPattern::Reg => {
+                let mut operands = [0u8; 4];
+                if let Some(op) = ops.first() {
+                    operands[0] = self.parse_register_operand(Some(op))?.0;
+                }
+                Ok(operands)
+            }
+            OperandPattern::RegReg => {
+                let mut operands = [0u8; 4];
+                if let Some(op) = ops.get(0) {
+                    operands[0] = self.parse_register_operand(Some(op))?.0;
+                }
+                if let Some(op) = ops.get(1) {
+                    operands[1] = self.parse_register_operand(Some(op))?.0;
+                }
+                Ok(operands)
+            }
+            OperandPattern::RegImm8 => {
+                let mut operands = [0u8; 4];
+                if let Some(op) = ops.get(0) {
+                    operands[0] = self.parse_register_operand(Some(op))?.0;
+                }
+                if let Some(op) = ops.get(1) {
+                    operands[1] = self.parse_immediate(Some(op))? as u8;
+                }
+                Ok(operands)
+            }
+            OperandPattern::Imm8 => {
+                let mut operands = [0u8; 4];
+                if let Some(op) = ops.get(0) {
+                    operands[0] = self.parse_immediate(Some(op))? as u8;
+                }
+                Ok(operands)
+            }
+            OperandPattern::Custom(_) | _ => {
+                // Custom patterns: fall back to generic parsing
+                Ok(self.parse_generic_ext_operands(ops))
+            }
+        }
+    }
+
+    /// Generic operand parsing for extension instructions.
+    fn parse_generic_ext_operands(&self, ops: &[&str]) -> [u8; 4] {
         let mut operands = [0u8; 4];
         for (i, op) in ops.iter().take(4).enumerate() {
             if let Ok(reg) = self.parse_register_operand(Some(op)) {
@@ -1043,8 +1202,7 @@ impl Assembler {
                 operands[i] = imm as u8;
             }
         }
-
-        Ok(Instruction::ext(ext_id, opcode, operands))
+        operands
     }
 
     /// Parse a register operand
