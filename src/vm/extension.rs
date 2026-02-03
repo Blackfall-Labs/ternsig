@@ -71,8 +71,13 @@ pub enum DomainOp {
     ChemRead { target: Register, chem_id: u8 },
     /// SET chemical level (authoritative). Host reads value from source H[reg][0].
     ChemSet { source: Register, chem_id: u8 },
-    /// ADDITIVE chemical injection (phasic event). Host reads delta from source H[reg][0].
-    ChemInject { source: Register, chem_id: u8 },
+    /// ADDITIVE chemical injection (phasic event). Host reads delta from source H[reg][elem_idx].
+    /// elem_idx defaults to 0 for backwards compatibility with single-element reads.
+    /// When `signed` is true, the raw register value is centered around 128 before
+    /// clamping: spike (255) → +127, no spike (0) → -128. This makes pool-output-based
+    /// injection bidirectional — untrained pools (~50% spike rate) produce net-zero
+    /// chemical change, while trained pools bias the direction.
+    ChemInject { source: Register, chem_id: u8, elem_idx: u8, signed: bool },
 
     // =========================================================================
     // Neuro: Field substrate (0x0005)

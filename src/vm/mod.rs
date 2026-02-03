@@ -68,7 +68,7 @@ pub mod validator;
 
 // New names (primary exports)
 pub use action::Action;
-pub use assembler::{assemble, AssembledProgram, AssemblerError, Assembler, RequiredExtension, ProjectionMeta};
+pub use assembler::{assemble, AssembledProgram, AssemblerError, Assembler, RequiredExtension, ProjectionMeta, ExtraExtMeta};
 pub use binary::{
     deserialize, load_from_file, save_to_file, serialize,
     BinaryFlags, Header, HEADER_SIZE, LEGACY_HEADER_SIZE, TVMR_HEADER_SIZE,

@@ -38,8 +38,8 @@ impl NeuroExtension {
                 InstructionMeta {
                     opcode: 0x0002,
                     mnemonic: "CHEM_INJECT",
-                    operand_pattern: OperandPattern::RegImm8,
-                    description: "Additive chemical injection (phasic). Yields ChemInject.",
+                    operand_pattern: OperandPattern::Custom("[source:1][chem_id:1][elem:1][flags:1]"),
+                    description: "Additive chemical injection (phasic). elem selects register element. flags bit0=signed (center around 128).",
                 },
                 InstructionMeta {
                     opcode: 0x0003,
@@ -250,11 +250,14 @@ impl Extension for NeuroExtension {
                 let chem_id = operands[1];
                 StepResult::Yield(DomainOp::ChemSet { source: reg, chem_id })
             }
-            // CHEM_INJECT: [reg:1][chem_id:1][_:2]
+            // CHEM_INJECT: [reg:1][chem_id:1][elem:1][flags:1]
+            // flags bit 0: signed mode (center pool output around 128)
             0x0002 => {
                 let reg = Register(operands[0]);
                 let chem_id = operands[1];
-                StepResult::Yield(DomainOp::ChemInject { source: reg, chem_id })
+                let elem_idx = operands[2]; // 0 = backwards compatible (first element)
+                let signed = operands[3] & 1 != 0; // bit 0 = signed pool output
+                StepResult::Yield(DomainOp::ChemInject { source: reg, chem_id, elem_idx, signed })
             }
             // FIELD_READ: [reg:1][field_id:1][_:2]
             0x0003 => {
